@@ -1,6 +1,6 @@
 # Signal
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/onelrian/signal/docker.yml?branch=main)](https://github.com/onelrian/signal/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/onelrian/signal/ci.yml?branch=main)](https://github.com/onelrian/signal/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/onelrian/signal)](https://hub.docker.com/r/onelrian/signal)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
