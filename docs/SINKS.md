@@ -13,6 +13,38 @@ a failing destination does not block successful deliveries to another one.
 Add `wazuh` to `SINKS` and set `SINK_WAZUH_ADDR` or `WAZUH_ADDR` to the Wazuh
 manager `host:port`. The default syslog encoding is RFC3164.
 
+The Wazuh manager's syslog listener is commonly configured for **UDP** (for
+example `<protocol>udp</protocol>` on port `11514`). AuditBridge defaults to
+TCP, so set `SINK_WAZUH_PROTOCOL=udp` to match a UDP listener:
+
+```bash
+docker run -d --rm --name auditbridge \
+  -e NETBIRD_API_TOKEN_FILE=/run/secrets/netbird-token \
+  -e SINKS=wazuh \
+  -e SINK_WAZUH_ADDR=wazuh-manager:11514 \
+  -e SINK_WAZUH_PROTOCOL=udp \
+  ghcr.io/onelrian/auditbridge:<immutable-tag>
+```
+
+### Wazuh-side setup
+
+AuditBridge ships each event as a syslog message with `program_name:
+netbird-audit` and a JSON body. To decode and alert on these events, add a
+decoder and ruleset to the Wazuh manager:
+
+- **Decoder** — match the `netbird-audit` program and parse the JSON body
+  (for example via `JSON_Decoder`), exposing fields such as `activity`,
+  `activity_code`, `initiator_email`, `initiator_name`, `target_id` and
+  `meta.*`.
+- **Rules** — a base rule that fires on every `netbird-audit` event, plus
+  higher-severity rules for sensitive activities (access-token and setup-key
+  changes, user/peer/group management, policy/route/network changes, and
+  failed logins).
+
+### Example
+
+![NetBird audit alerts in the Wazuh dashboard](images/wazuh-netbird-alerts.png)
+
 ## Generic sinks
 
 For every other sink name, use these variables with `<NAME>` converted to upper
