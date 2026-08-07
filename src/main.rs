@@ -1,5 +1,6 @@
 mod config;
 mod cursor;
+mod metrics;
 mod models;
 mod netbird;
 mod retry;
@@ -11,6 +12,7 @@ mod tests;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use config::Config;
+use metrics::Metrics;
 use netbird::NetbirdClient;
 use retry::{with_retry, RetryConfig};
 use sinks::Sink;
@@ -68,10 +70,19 @@ async fn main() -> Result<()> {
     // duplicates delivery to the others.
     let mut cursors = build_initial_cursors(&sinks, &persisted);
 
+    let metrics = Metrics::new();
+    let metrics_for_server = metrics.clone();
+    let metrics_port = config.metrics_port;
+    tokio::spawn(async move {
+        if let Err(e) = metrics::serve(metrics_port, metrics_for_server).await {
+            error!("Metrics/health server failed: {}", e);
+        }
+    });
+
     info!("Started monitoring...");
 
     loop {
-        process_cycle(&nb_client, &sinks, &mut cursors, &config.retry).await;
+        process_cycle(&nb_client, &sinks, &mut cursors, &config.retry, &metrics).await;
 
         if let Some(path) = &config.cursor_file {
             let to_save: HashMap<String, DateTime<Utc>> = cursors
@@ -108,11 +119,16 @@ async fn process_cycle(
     sinks: &[Box<dyn Sink>],
     cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
     retry_cfg: &RetryConfig,
+    metrics: &Metrics,
 ) {
     let mut events = match with_retry("netbird fetch", retry_cfg, || nb_client.fetch_events()).await
     {
-        Ok(events) => events,
+        Ok(events) => {
+            metrics.record_fetch_success(events.len());
+            events
+        }
         Err(e) => {
+            metrics.record_fetch_error();
             error!("Failed to fetch events from Netbird: {}", e);
             return;
         }
@@ -145,9 +161,13 @@ async fn process_cycle(
                         *cursor = Some(ts.with_timezone(&Utc));
                     }
                 }
+                metrics.record_sink_success(sink.name(), count);
                 info!("Delivered {} events to {}", count, sink.name());
             }
-            Err(e) => error!("Failed to send {} events to {}: {}", count, sink.name(), e),
+            Err(e) => {
+                metrics.record_sink_error(sink.name());
+                error!("Failed to send {} events to {}: {}", count, sink.name(), e);
+            }
         }
     }
 }

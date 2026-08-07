@@ -30,6 +30,9 @@ async-trait = "0.1"
 # Jitter for retry/backoff
 rand = "0.8"
 
+# /healthz, /readyz, /metrics HTTP server (already share hyper/tower with reqwest)
+axum = "0.7"
+
 # Logging + tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -51,6 +51,7 @@ pub struct Config {
     // just mean a silently-discarded file every restart.
     pub cursor_file: Option<String>,
     pub retry: RetryConfig,
+    pub metrics_port: u16,
 }
 
 impl Config {
@@ -73,6 +74,10 @@ impl Config {
             sinks,
             cursor_file: env::var("CURSOR_FILE").ok(),
             retry: RetryConfig::from_env(),
+            metrics_port: env::var("METRICS_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(9090),
         })
     }
 }
