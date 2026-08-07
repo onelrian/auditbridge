@@ -8,9 +8,9 @@ mod tests;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use config::{Config, SinkConfig};
+use config::Config;
 use netbird::NetbirdClient;
-use sinks::{HttpSink, LokiSink, Sink, WazuhSink};
+use sinks::Sink;
 use std::collections::HashMap;
 use std::env;
 use tokio::time::sleep;
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     info!("Check interval: {:?}", config.check_interval);
     info!("========================================");
 
-    let sinks = build_sinks(&config.sinks).await;
+    let sinks: Vec<Box<dyn Sink>> = config.sinks.iter().map(sinks::build_sink).collect();
     if sinks.is_empty() {
         error!("No sinks configured, nothing to do");
         std::process::exit(1);
@@ -59,24 +59,6 @@ async fn main() -> Result<()> {
         process_cycle(&nb_client, &sinks, &mut cursors).await;
         sleep(config.check_interval).await;
     }
-}
-
-async fn build_sinks(configs: &[SinkConfig]) -> Vec<Box<dyn Sink>> {
-    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
-    for cfg in configs {
-        match cfg {
-            SinkConfig::Loki(url) => {
-                let sink = LokiSink::new(url.clone());
-                if let Err(e) = sink.wait_for_ready().await {
-                    tracing::warn!("Loki check failed: {}. Continuing anyway...", e);
-                }
-                sinks.push(Box::new(sink));
-            }
-            SinkConfig::Wazuh(addr) => sinks.push(Box::new(WazuhSink::new(addr.clone()))),
-            SinkConfig::Http(url) => sinks.push(Box::new(HttpSink::new(url.clone()))),
-        }
-    }
-    sinks
 }
 
 // Fetches once per cycle (the NetBird audit endpoint has no server-side

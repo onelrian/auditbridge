@@ -21,11 +21,18 @@ Signal acts as a stateless, highly available middleware between your NetBird con
 ```mermaid
 flowchart LR
     NA[NetBird API] -->|JSON Stream| Signal[Signal Exporter]
-    Signal -->|Push API| Loki[Grafana Loki]
-    Signal -->|Syslog RFC5424| Wazuh[Wazuh Manager]
-    Signal -->|HTTP POST| HTTP[Generic HTTP Endpoint]
+    Signal -->|http transport, loki encoding| Loki[Grafana Loki]
+    Signal -->|syslog transport, RFC3164/5424 encoding| Wazuh[Wazuh Manager]
+    Signal -->|http transport, json/ndjson encoding| HTTP[Any HTTP Endpoint]
     Loki -->|LogQL| Grafana[Grafana Dashboards]
 ```
+
+Sinks are built from two generic primitives, not one Rust type per vendor:
+
+- **Transport**: how bytes are delivered. `http` (any URL, method, headers) or `syslog` (TCP/UDP).
+- **Encoding**: what the bytes look like. `json` (flat array), `ndjson`, `loki` (Loki's push API stream/label shape), `syslog3164`, or `syslog5424`.
+
+Loki and Wazuh ship as named presets (`SINKS=loki,wazuh` works with zero further config), but any other backend that speaks plain HTTP or syslog, Datadog, Splunk HEC, a generic webhook, another SIEM, needs no new code, just a `SINK_<NAME>_*` block of environment variables. See [Adding a Custom Sink](#adding-a-custom-sink) below.
 
 ## Prerequisites
 
@@ -71,10 +78,44 @@ Signal is configured entirely via environment variables.
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `NETBIRD_API_TOKEN` | NetBird PAT with audit permissions | - | **Yes** |
-| `LOKI_URL` | Loki push endpoint (HTTP/HTTPS) | `http://loki:3100` | No |
+| `SINKS` | Comma-separated list of sink names to fan out to | `loki` | No |
 | `NETBIRD_API_URL` | NetBird API base URL (for Self-Hosted) | `https://api.netbird.io` | No |
 | `CHECK_INTERVAL` | Event polling interval (seconds) | `10` | No |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`) | `info` | No |
+
+#### Built-in sink presets
+
+| Sink name | Variable | Description | Default |
+|---|---|---|---|
+| `loki` | `LOKI_URL` (or `SINK_LOKI_URL`) | Loki base URL (legacy var) or exact push URL | `http://loki:3100` |
+| `wazuh` | `SINK_WAZUH_ADDR` (or `WAZUH_ADDR`) | Wazuh manager syslog address (`host:port`) | - (required if `wazuh` is in `SINKS`) |
+
+#### Adding a Custom Sink
+
+Any name in `SINKS` besides `loki`/`wazuh` is a fully generic sink, no code changes needed. Sink names become part of an environment variable name, so use only letters, digits, and underscores (no hyphens or spaces).
+
+| Variable | Description |
+|---|---|
+| `SINK_<NAME>_TRANSPORT` | `http` or `syslog` |
+| `SINK_<NAME>_ENCODING` | `json`, `ndjson`, `loki`, `syslog3164`, or `syslog5424` |
+| `SINK_<NAME>_URL` | Destination URL (`http` transport) |
+| `SINK_<NAME>_METHOD` | HTTP method, defaults to `POST` (`http` transport) |
+| `SINK_<NAME>_HEADERS` | `Key1:Value1,Key2:Value2` (`http` transport, optional) |
+| `SINK_<NAME>_ADDR` | Destination `host:port` (`syslog` transport) |
+| `SINK_<NAME>_PROTOCOL` | `tcp` or `udp`, defaults to `tcp` (`syslog` transport) |
+
+Example, shipping to Loki and a generic JSON webhook at once:
+
+```bash
+docker run -d --name signal \
+  -e NETBIRD_API_TOKEN="nbp_your_token_here" \
+  -e SINKS="loki,my_webhook" \
+  -e SINK_MY_WEBHOOK_TRANSPORT="http" \
+  -e SINK_MY_WEBHOOK_URL="https://collector.example.com/ingest" \
+  -e SINK_MY_WEBHOOK_ENCODING="json" \
+  -e SINK_MY_WEBHOOK_HEADERS="Authorization:Bearer secret" \
+  ghcr.io/onelrian/auditbridge:latest
+```
 
 ### Docker Compose (Production)
 
