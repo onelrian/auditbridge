@@ -25,8 +25,9 @@ docker run --rm --name auditbridge \
   ghcr.io/onelrian/auditbridge:<immutable-tag>
 ```
 
-Replace `<immutable-tag>` with a released application version. Do not use
-`latest` for production deployments.
+> [!WARNING]
+> Replace `<immutable-tag>` with a released application version. Do not use
+> `latest` in a production deployment, it moves whenever a new release ships.
 
 ## Documentation
 
@@ -46,6 +47,21 @@ AuditBridge serves `/healthz`, `/readyz`, and `/metrics` on `METRICS_PORT`
 (default `9090`). Readiness requires a successful NetBird fetch and delivery to
 at least one configured sink. See [Operations](docs/OPERATIONS.md) for metric
 names and troubleshooting.
+
+## Verified
+
+The screenshots below are real output from a live run: real Loki, a real
+syslog receiver, and AuditBridge's actual binary, with only the upstream
+NetBird API stubbed to fixed sample data (no live account involved).
+
+![Live delivery to Loki and Wazuh](docs/images/live-delivery.png)
+![Delivered events queried back from Loki](docs/images/live-loki-query.png)
+![Live /healthz, /readyz, and /metrics output](docs/images/live-health-metrics.png)
+
+> [!TIP]
+> Don't take the screenshots' word for it: `examples/local-demo/` reproduces
+> this exact setup with one `docker compose up`. See
+> [examples/local-demo/README.md](examples/local-demo/README.md).
 
 ## License
 

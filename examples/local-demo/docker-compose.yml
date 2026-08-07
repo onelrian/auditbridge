@@ -1,0 +1,38 @@
+services:
+  mock-netbird:
+    image: python:3.12-slim
+    volumes:
+      - ./mock_netbird.py:/mock_netbird.py:ro
+    command: ["python3", "-u", "/mock_netbird.py"]
+    networks: [demo]
+
+  wazuh-receiver:
+    image: python:3.12-slim
+    volumes:
+      - ./syslog_receiver.py:/syslog_receiver.py:ro
+    command: ["python3", "-u", "/syslog_receiver.py"]
+    networks: [demo]
+
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    networks: [demo]
+
+  auditbridge:
+    build:
+      context: ../..
+    environment:
+      NETBIRD_API_URL: "http://mock-netbird:8080"
+      NETBIRD_API_TOKEN: "demo-token-not-real"
+      SINKS: "loki,wazuh"
+      LOKI_URL: "http://loki:3100"
+      SINK_WAZUH_ADDR: "wazuh-receiver:1514"
+      CHECK_INTERVAL: "5"
+      RUST_LOG: "info"
+    ports:
+      - "19090:9090"
+    depends_on: [mock-netbird, loki, wazuh-receiver]
+    networks: [demo]
+
+networks:
+  demo: {}

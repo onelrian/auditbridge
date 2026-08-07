@@ -12,7 +12,8 @@ helm lint charts/auditbridge
 ```
 
 The tests start local HTTP and syslog listeners. Run them in an environment that
-permits binding loopback ports.
+permits binding loopback ports. For a real end-to-end check against a live Loki
+and syslog receiver, run [examples/local-demo](examples/local-demo/README.md).
 
 ## Changes
 

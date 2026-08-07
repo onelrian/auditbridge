@@ -17,9 +17,11 @@ AuditBridge uses environment variables. A direct secret variable and its
 | `METRICS_PORT` | `9090` | Health and Prometheus HTTP server port |
 | `RUST_LOG` | `info` | Rust log filter |
 
-`CURSOR_FILE` must be on durable storage to survive a container or pod
-replacement. Without it, AuditBridge reprocesses the account audit history
-after each restart. NetBird’s audit endpoint returns the full history and does
-not expose server-side paging or cursor parameters.
+> [!NOTE]
+> `CURSOR_FILE` must be on durable storage (a Docker volume or a Kubernetes
+> PVC) to survive a container or pod replacement. Without it, AuditBridge
+> reprocesses the account's full audit history after every restart, since
+> NetBird's audit endpoint returns the full history and exposes no
+> server-side paging or cursor parameters.
 
 See [Sinks](SINKS.md) for sink-specific variables.
