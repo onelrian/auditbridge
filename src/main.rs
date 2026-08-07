@@ -2,6 +2,7 @@ mod config;
 mod cursor;
 mod models;
 mod netbird;
+mod retry;
 mod sinks;
 
 #[cfg(test)]
@@ -11,6 +12,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use config::Config;
 use netbird::NetbirdClient;
+use retry::{with_retry, RetryConfig};
 use sinks::Sink;
 use std::collections::HashMap;
 use std::env;
@@ -69,7 +71,7 @@ async fn main() -> Result<()> {
     info!("Started monitoring...");
 
     loop {
-        process_cycle(&nb_client, &sinks, &mut cursors).await;
+        process_cycle(&nb_client, &sinks, &mut cursors, &config.retry).await;
 
         if let Some(path) = &config.cursor_file {
             let to_save: HashMap<String, DateTime<Utc>> = cursors
@@ -98,15 +100,17 @@ fn build_initial_cursors(
         .collect()
 }
 
-// Fetches once per cycle (the NetBird audit endpoint has no server-side
-// filtering), then delivers to each sink against its own cursor so a failed
-// send only holds back that one sink's watermark, never the others'.
+// Fetches once per cycle, then delivers to each sink against its own cursor
+// so a down sink never blocks the others. Both retry with backoff first, so
+// a transient blip recovers without waiting a full CHECK_INTERVAL.
 async fn process_cycle(
     nb_client: &NetbirdClient,
     sinks: &[Box<dyn Sink>],
     cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    retry_cfg: &RetryConfig,
 ) {
-    let mut events = match nb_client.fetch_events().await {
+    let mut events = match with_retry("netbird fetch", retry_cfg, || nb_client.fetch_events()).await
+    {
         Ok(events) => events,
         Err(e) => {
             error!("Failed to fetch events from Netbird: {}", e);
@@ -133,7 +137,8 @@ async fn process_cycle(
         }
 
         let count = pending.len();
-        match sink.send(&pending).await {
+        let op_name = format!("sink '{}' send", sink.name());
+        match with_retry(&op_name, retry_cfg, || sink.send(&pending)).await {
             Ok(_) => {
                 if let Some(last_event) = pending.last() {
                     if let Ok(ts) = DateTime::parse_from_rfc3339(&last_event.timestamp) {

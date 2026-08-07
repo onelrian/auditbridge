@@ -1,3 +1,4 @@
+use crate::retry::RetryConfig;
 use crate::sinks::encoding::Encoding;
 use crate::sinks::syslog::SyslogProtocol;
 use anyhow::{Context, Result};
@@ -49,6 +50,7 @@ pub struct Config {
     // volume, so defaulting it on in a container with no such volume would
     // just mean a silently-discarded file every restart.
     pub cursor_file: Option<String>,
+    pub retry: RetryConfig,
 }
 
 impl Config {
@@ -70,6 +72,7 @@ impl Config {
             ),
             sinks,
             cursor_file: env::var("CURSOR_FILE").ok(),
+            retry: RetryConfig::from_env(),
         })
     }
 }

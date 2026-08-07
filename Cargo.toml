@@ -27,6 +27,9 @@ anyhow = "1"
 # Enables `dyn Sink` trait objects for the pluggable sink fan-out
 async-trait = "0.1"
 
+# Jitter for retry/backoff
+rand = "0.8"
+
 # Logging + tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
