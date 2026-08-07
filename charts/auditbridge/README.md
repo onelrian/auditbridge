@@ -31,8 +31,9 @@ envFromSecret:
 
 ## Metrics
 
-The Service exposes `/healthz`, `/readyz`, and `/metrics` on port 9090. Enable
-the ServiceMonitor only when the Prometheus Operator CRD is installed:
+The Service exposes `/healthz`, `/readyz`, and `/metrics`. The application port
+is `metrics.port`; `service.port` only controls the Service's client-facing
+port. Enable the ServiceMonitor only when the Prometheus Operator CRD is installed:
 
 ```yaml
 metrics:

@@ -79,6 +79,8 @@ volumeMounts: []
 volumes: []
 
 metrics:
+  # Port used by AuditBridge's health and Prometheus server.
+  port: 9090
   serviceMonitor:
     enabled: false
     namespace: ""

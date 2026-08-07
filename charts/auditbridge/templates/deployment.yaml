@@ -34,10 +34,11 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: metrics
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.metrics.port }}
               protocol: TCP
-          {{- if or .Values.env .Values.envRaw .Values.envFromSecret }}
           env:
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
@@ -56,7 +57,6 @@ spec:
                   name: {{ index $parts 0 }}
                   key: {{ index $parts 1 }}
             {{- end }}
-          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
