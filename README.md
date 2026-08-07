@@ -82,6 +82,11 @@ Signal is configured entirely via environment variables.
 | `NETBIRD_API_URL` | NetBird API base URL (for Self-Hosted) | `https://api.netbird.io` | No |
 | `CHECK_INTERVAL` | Event polling interval (seconds) | `10` | No |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`) | `info` | No |
+| `RETRY_MAX_ATTEMPTS` | Max attempts per fetch/send before giving up for that cycle | `5` | No |
+| `RETRY_BASE_DELAY_MS` | Backoff base delay (full jitter: random up to `base * 2^attempt`) | `500` | No |
+| `RETRY_MAX_DELAY_MS` | Backoff delay cap | `30000` | No |
+
+Both the NetBird fetch and every sink's send retry with backoff (independently per sink) before that cycle gives up on them, so a transient blip recovers without waiting for the next `CHECK_INTERVAL`.
 
 #### Built-in sink presets
 

@@ -4,6 +4,7 @@ mod tests {
     use crate::cursor;
     use crate::models::Event;
     use crate::netbird::NetbirdClient;
+    use crate::retry::{with_retry, RetryConfig};
     use crate::sinks::encoding::Encoding;
     use crate::sinks::http::HttpSink;
     use crate::sinks::syslog::{SyslogProtocol, SyslogSink};
@@ -12,8 +13,20 @@ mod tests {
     use chrono::{DateTime, Utc};
     use reqwest::Method;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // No retries: keeps process_cycle tests focused on watermark behavior,
+    // not on how many times a deliberately-failing mock gets hit.
+    fn no_retry() -> RetryConfig {
+        RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        }
+    }
 
     fn sample_event(id: &str) -> Event {
         Event {
@@ -159,7 +172,7 @@ mod tests {
         ))];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors).await;
+        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
 
         assert_eq!(
             cursors.get("flaky").copied().flatten(),
@@ -195,7 +208,7 @@ mod tests {
         ))];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors).await;
+        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
 
         assert!(
             cursors.get("generic").copied().flatten().is_some(),
@@ -246,7 +259,7 @@ mod tests {
         ];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors).await;
+        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
 
         assert_eq!(cursors.get("down").copied().flatten(), None);
         assert!(cursors.get("up").copied().flatten().is_some());
@@ -428,5 +441,53 @@ mod tests {
 
         assert_eq!(cursors.get("loki").copied().flatten(), Some(loki_ts));
         assert_eq!(cursors.get("wazuh").copied().flatten(), None);
+    }
+
+    fn fast_retry(max_attempts: u32) -> RetryConfig {
+        RetryConfig {
+            max_attempts,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_succeeds_after_transient_failures() {
+        let attempts = AtomicU32::new(0);
+        let cfg = fast_retry(5);
+
+        let result = with_retry("test op", &cfg, || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(anyhow::anyhow!("transient failure"))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_gives_up_after_max_attempts() {
+        let attempts = AtomicU32::new(0);
+        let cfg = fast_retry(3);
+
+        let result: anyhow::Result<()> = with_retry("test op", &cfg, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async { Err(anyhow::anyhow!("permanent failure")) }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "must stop at max_attempts, not retry forever"
+        );
     }
 }
