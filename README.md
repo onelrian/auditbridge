@@ -14,20 +14,27 @@ flowchart LR
 
 ## Quick start
 
-Create a NetBird personal access token with audit-log read access, store it in a
-file, and run a released immutable image:
+Get a NetBird access token (Team > create a Service User > create an access
+token, see [Installation](docs/INSTALLATION.md#get-a-netbird-access-token) for
+exact steps), store it in a file, then run a released immutable image:
 
 ```bash
-docker run --rm --name auditbridge \
+echo "nbp_your_token_here" > netbird-token
+chmod 600 netbird-token
+
+docker run -d --rm --name auditbridge \
   -v "$PWD/netbird-token:/run/secrets/netbird-token:ro" \
   -e NETBIRD_API_TOKEN_FILE=/run/secrets/netbird-token \
   -e LOKI_URL=https://loki.example.com \
+  -p 9090:9090 \
   ghcr.io/onelrian/auditbridge:<immutable-tag>
 ```
 
 > [!WARNING]
 > Replace `<immutable-tag>` with a released application version. Do not use
 > `latest` in a production deployment, it moves whenever a new release ships.
+
+Confirm it's running: `docker logs auditbridge` and `curl http://localhost:9090/healthz`.
 
 ## Documentation
 

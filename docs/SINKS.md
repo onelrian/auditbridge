@@ -32,3 +32,27 @@ case and underscores:
 > [!TIP]
 > Use the `_HEADERS_FILE` form for bearer tokens and API keys, mounted from a
 > Docker or Kubernetes secret, instead of `SINK_<NAME>_HEADERS` directly.
+
+### Worked example: a generic HTTP webhook
+
+Deliver to Loki and a custom webhook at the same time, naming the second sink
+`webhook` (any name works, it becomes the `SINK_<NAME>_*` prefix and the
+`sink` label in its own metrics):
+
+```bash
+docker run -d --rm --name auditbridge \
+  -v "$PWD/netbird-token:/run/secrets/netbird-token:ro" \
+  -e NETBIRD_API_TOKEN_FILE=/run/secrets/netbird-token \
+  -e SINKS=loki,webhook \
+  -e LOKI_URL=https://loki.example.com \
+  -e SINK_WEBHOOK_TRANSPORT=http \
+  -e SINK_WEBHOOK_URL=https://collector.example.com/ingest \
+  -e SINK_WEBHOOK_ENCODING=json \
+  -e SINK_WEBHOOK_HEADERS="Authorization:Bearer your-webhook-token" \
+  ghcr.io/onelrian/auditbridge:<immutable-tag>
+```
+
+The same pattern applies to any generic sink, HTTP or syslog.
+[examples/local-demo](../examples/local-demo/) exercises `loki` and `wazuh`
+together against real receivers; the `webhook` example above follows the same
+shape for a generic HTTP destination instead.
