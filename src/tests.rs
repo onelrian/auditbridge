@@ -2,6 +2,7 @@
 mod tests {
     use crate::config::Config;
     use crate::cursor;
+    use crate::metrics::{router, Metrics};
     use crate::models::Event;
     use crate::netbird::NetbirdClient;
     use crate::retry::{with_retry, RetryConfig};
@@ -172,7 +173,14 @@ mod tests {
         ))];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
+        process_cycle(
+            &nb_client,
+            &sinks,
+            &mut cursors,
+            &no_retry(),
+            &Metrics::default(),
+        )
+        .await;
 
         assert_eq!(
             cursors.get("flaky").copied().flatten(),
@@ -208,7 +216,14 @@ mod tests {
         ))];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
+        process_cycle(
+            &nb_client,
+            &sinks,
+            &mut cursors,
+            &no_retry(),
+            &Metrics::default(),
+        )
+        .await;
 
         assert!(
             cursors.get("generic").copied().flatten().is_some(),
@@ -259,7 +274,14 @@ mod tests {
         ];
         let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
 
-        process_cycle(&nb_client, &sinks, &mut cursors, &no_retry()).await;
+        process_cycle(
+            &nb_client,
+            &sinks,
+            &mut cursors,
+            &no_retry(),
+            &Metrics::default(),
+        )
+        .await;
 
         assert_eq!(cursors.get("down").copied().flatten(), None);
         assert!(cursors.get("up").copied().flatten().is_some());
@@ -489,5 +511,101 @@ mod tests {
             3,
             "must stop at max_attempts, not retry forever"
         );
+    }
+
+    #[test]
+    fn test_metrics_not_ready_until_fetch_and_a_sink_both_succeed() {
+        let metrics = Metrics::default();
+        assert!(
+            !metrics.is_ready(),
+            "must not be ready before the first cycle"
+        );
+
+        metrics.record_fetch_success(3);
+        assert!(
+            !metrics.is_ready(),
+            "fetch alone isn't enough, no sink has delivered yet"
+        );
+
+        metrics.record_sink_success("loki", 3);
+        assert!(metrics.is_ready());
+    }
+
+    #[test]
+    fn test_metrics_becomes_unready_again_after_fetch_failure() {
+        let metrics = Metrics::default();
+        metrics.record_fetch_success(1);
+        metrics.record_sink_success("loki", 1);
+        assert!(metrics.is_ready());
+
+        metrics.record_fetch_error();
+        assert!(
+            !metrics.is_ready(),
+            "a failed fetch must flip readiness back off"
+        );
+    }
+
+    #[test]
+    fn test_metrics_render_prometheus_includes_recorded_values() {
+        let metrics = Metrics::default();
+        metrics.record_fetch_success(5);
+        metrics.record_sink_success("loki", 5);
+        metrics.record_sink_error("wazuh");
+
+        let output = metrics.render_prometheus();
+
+        assert!(output.contains("auditbridge_events_fetched_total 5"));
+        assert!(output.contains("auditbridge_events_delivered_total{sink=\"loki\"} 5"));
+        assert!(output.contains("auditbridge_delivery_errors_total{sink=\"wazuh\"} 1"));
+    }
+
+    #[tokio::test]
+    async fn test_metrics_server_exposes_healthz_readyz_metrics() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let metrics = Metrics::new();
+        let server_metrics = metrics.clone();
+
+        tokio::spawn(async move {
+            axum::serve(listener, router(server_metrics)).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+
+        let healthz = client
+            .get(format!("http://{}/healthz", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(healthz.status(), reqwest::StatusCode::OK);
+
+        let readyz_before = client
+            .get(format!("http://{}/readyz", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            readyz_before.status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        metrics.record_fetch_success(2);
+        metrics.record_sink_success("loki", 2);
+
+        let readyz_after = client
+            .get(format!("http://{}/readyz", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(readyz_after.status(), reqwest::StatusCode::OK);
+
+        let metrics_resp = client
+            .get(format!("http://{}/metrics", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), reqwest::StatusCode::OK);
+        let body = metrics_resp.text().await.unwrap();
+        assert!(body.contains("auditbridge_events_fetched_total 2"));
     }
 }

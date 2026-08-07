@@ -88,6 +88,18 @@ Signal is configured entirely via environment variables.
 
 Both the NetBird fetch and every sink's send retry with backoff (independently per sink) before that cycle gives up on them, so a transient blip recovers without waiting for the next `CHECK_INTERVAL`.
 
+#### Health and Metrics
+
+| Variable | Description | Default |
+|---|---|---|
+| `METRICS_PORT` | Port for `/healthz`, `/readyz`, and `/metrics` | `9090` |
+
+| Endpoint | Meaning |
+|---|---|
+| `GET /healthz` | Process is alive (always `200` once the server is up) |
+| `GET /readyz` | `200` once the NetBird API has been reachable at least once and at least one sink has confirmed delivery, `503` otherwise (including if a later fetch starts failing again) |
+| `GET /metrics` | Prometheus exposition format: `auditbridge_events_fetched_total`, `auditbridge_netbird_fetch_errors_total`, `auditbridge_events_delivered_total{sink}`, `auditbridge_delivery_errors_total{sink}`, `auditbridge_last_successful_poll_timestamp_seconds` |
+
 #### Built-in sink presets
 
 | Sink name | Variable | Description | Default |
