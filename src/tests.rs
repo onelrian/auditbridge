@@ -61,7 +61,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(vec![sample_event("1")]))
             .mount(&mock_server)
             .await;
@@ -164,7 +164,7 @@ mod tests {
         let sink_mock = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(vec![sample_event("1")]))
             .mount(&nb_mock)
             .await;
@@ -207,7 +207,7 @@ mod tests {
         let sink_mock = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(vec![sample_event("1")]))
             .mount(&nb_mock)
             .await;
@@ -250,7 +250,7 @@ mod tests {
         let up_mock = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(vec![sample_event("1")]))
             .mount(&nb_mock)
             .await;
@@ -708,7 +708,7 @@ mod tests {
     async fn test_run_exits_immediately_if_shutdown_already_signaled() {
         let nb_mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<Event>::new()))
             .expect(0)
             .mount(&nb_mock)
@@ -732,7 +732,7 @@ mod tests {
     async fn test_run_exits_promptly_when_shutdown_fires_during_idle_wait() {
         let nb_mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<Event>::new()))
             .mount(&nb_mock)
             .await;
@@ -764,7 +764,7 @@ mod tests {
     async fn test_run_lets_in_flight_cycle_finish_before_exiting() {
         let nb_mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/events"))
+            .and(path("/api/events/audit"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(vec![sample_event("1")])

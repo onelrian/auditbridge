@@ -146,6 +146,12 @@ By default, each sink's delivery cursor lives only in memory: a restart re-fetch
 
 This only helps if the path survives a restart, a bind mount in Docker, a PVC in Kubernetes. Without one, `CURSOR_FILE` just gets recreated empty every time the container restarts, which is harmless but pointless.
 
+#### Scaling Limits
+
+NetBird's `/api/events/audit` endpoint (confirmed against [docs.netbird.io/api/resources/events](https://docs.netbird.io/api/resources/events)) has no `page`, `page_size`, `since`, or cursor query parameters, unlike its newer `network-traffic` and `proxy` event endpoints. Every poll fetches the account's entire audit history in one response; there's no server-side way to ask NetBird for only events after a given point.
+
+`CURSOR_FILE` (above) makes this tolerable across restarts by filtering client-side and only re-delivering events past each sink's last confirmed watermark, but it doesn't change what NetBird sends over the wire on every single poll. A long-lived, high-activity account will see fetch payload size and latency grow over time regardless of `CURSOR_FILE`. There's no tuning knob for this on this project's side; it's a NetBird API limitation.
+
 ### Docker Compose (Production)
 
 ```yaml
