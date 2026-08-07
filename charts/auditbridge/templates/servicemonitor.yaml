@@ -1,0 +1,46 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- if not .Values.service.enabled }}
+{{- fail "service.enabled must be true when metrics.serviceMonitor.enabled is true" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "auditbridge.fullname" . }}
+  namespace: {{ default (include "auditbridge.namespace" .) .Values.metrics.serviceMonitor.namespace }}
+  labels:
+    {{- include "auditbridge.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.serviceMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.metrics.serviceMonitor.jobLabel }}
+  jobLabel: {{ . }}
+  {{- end }}
+  {{- if .Values.metrics.serviceMonitor.honorLabels }}
+  honorLabels: true
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "auditbridge.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: {{ .Values.service.name }}
+      path: /metrics
+      {{- with .Values.metrics.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
