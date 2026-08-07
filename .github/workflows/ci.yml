@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [ "main" ]
-    tags: [ 'v*.*.*' ]
+    tags: [ 'v*.*.*', 'chart-v*.*.*' ]
   pull_request:
     branches: [ "main" ]
 
@@ -153,7 +153,7 @@ jobs:
           generate_release_notes: true
 
   publish-chart:
-    if: startsWith(github.ref, 'refs/heads/')
+    if: startsWith(github.ref, 'refs/tags/chart-v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -162,21 +162,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Detect chart changes
-        id: chart
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            chart:
-              - 'charts/auditbridge/**'
-
       - name: Set up Helm
-        if: steps.chart.outputs.chart == 'true'
         uses: azure/setup-helm@v4
 
-      # OCI publishing gives the chart an independent release lifecycle.
+      - name: Verify chart release version
+        run: test "${GITHUB_REF_NAME#chart-v}" = "$(helm show chart charts/auditbridge | awk '/^version:/{print $2}')"
+
+      # OCI publishing keeps chart releases independent from application releases.
       - name: Publish chart to GHCR
-        if: steps.chart.outputs.chart == 'true'
         env:
           HELM_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
