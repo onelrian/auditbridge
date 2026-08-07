@@ -67,8 +67,6 @@ docker run -d --name signal \
 ```
 It will start a container named `signal` and run it in the background.
 
-![Example usage](docs/images/example.png)
-
 ## Production Deployment
 
 ### Configuration Reference
