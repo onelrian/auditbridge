@@ -4,6 +4,8 @@ mod tests {
     use crate::loki::LokiClient;
     use crate::models::Event;
     use crate::netbird::NetbirdClient;
+    use crate::process_cycle;
+    use chrono::{DateTime, Utc};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -68,6 +70,84 @@ mod tests {
         ];
 
         client.send_events(&events).await.expect("Failed to send events");
+    }
+
+    #[tokio::test]
+    async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
+        let nb_mock = MockServer::start().await;
+        let loki_mock = MockServer::start().await;
+
+        let event = Event {
+            id: "1".to_string(),
+            timestamp: "2023-01-01T00:00:00Z".to_string(),
+            activity: "test_activity".to_string(),
+            activity_code: "test.activity".to_string(),
+            initiator_id: None,
+            initiator_email: None,
+            initiator_name: None,
+            target_id: None,
+            account_id: Some("acc1".to_string()),
+            meta: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec![event]))
+            .mount(&nb_mock)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/loki/api/v1/push"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&loki_mock)
+            .await;
+
+        let nb_client = NetbirdClient::new(nb_mock.uri(), "fake_token".to_string());
+        let loki_client = LokiClient::new(loki_mock.uri());
+        let mut cursor: Option<DateTime<Utc>> = None;
+
+        process_cycle(&nb_client, &loki_client, &mut cursor).await;
+
+        assert_eq!(cursor, None, "watermark must not advance when the sink write fails");
+    }
+
+    #[tokio::test]
+    async fn test_process_cycle_advances_watermark_on_send_success() {
+        let nb_mock = MockServer::start().await;
+        let loki_mock = MockServer::start().await;
+
+        let event = Event {
+            id: "1".to_string(),
+            timestamp: "2023-01-01T00:00:00Z".to_string(),
+            activity: "test_activity".to_string(),
+            activity_code: "test.activity".to_string(),
+            initiator_id: None,
+            initiator_email: None,
+            initiator_name: None,
+            target_id: None,
+            account_id: Some("acc1".to_string()),
+            meta: None,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec![event]))
+            .mount(&nb_mock)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/loki/api/v1/push"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&loki_mock)
+            .await;
+
+        let nb_client = NetbirdClient::new(nb_mock.uri(), "fake_token".to_string());
+        let loki_client = LokiClient::new(loki_mock.uri());
+        let mut cursor: Option<DateTime<Utc>> = None;
+
+        process_cycle(&nb_client, &loki_client, &mut cursor).await;
+
+        assert!(cursor.is_some(), "watermark must advance once delivery is confirmed");
     }
 
     #[test]
