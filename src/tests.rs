@@ -10,7 +10,7 @@ mod tests {
     use crate::sinks::http::HttpSink;
     use crate::sinks::syslog::{SyslogProtocol, SyslogSink};
     use crate::sinks::Sink;
-    use crate::{build_initial_cursors, process_cycle};
+    use crate::{build_initial_cursors, process_cycle, run};
     use chrono::{DateTime, Utc};
     use reqwest::Method;
     use std::collections::HashMap;
@@ -26,6 +26,18 @@ mod tests {
             max_attempts: 1,
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(1),
+        }
+    }
+
+    fn test_config() -> Config {
+        Config {
+            netbird_api_url: "http://localhost".to_string(),
+            netbird_api_token: "token".to_string(),
+            check_interval: Duration::from_millis(10),
+            sinks: vec![],
+            cursor_file: None,
+            retry: no_retry(),
+            metrics_port: 0,
         }
     }
 
@@ -607,5 +619,116 @@ mod tests {
         assert_eq!(metrics_resp.status(), reqwest::StatusCode::OK);
         let body = metrics_resp.text().await.unwrap();
         assert!(body.contains("auditbridge_events_fetched_total 2"));
+    }
+
+    #[tokio::test]
+    async fn test_run_exits_immediately_if_shutdown_already_signaled() {
+        let nb_mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<Event>::new()))
+            .expect(0)
+            .mount(&nb_mock)
+            .await;
+
+        let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+        let sinks: Vec<Box<dyn Sink>> = vec![];
+        let mut cursors = HashMap::new();
+        let config = test_config();
+        let metrics = Metrics::default();
+        let (_tx, rx) = tokio::sync::watch::channel(true);
+
+        let start = std::time::Instant::now();
+        run(&nb_client, &sinks, &mut cursors, &config, &metrics, rx).await;
+
+        assert!(start.elapsed() < Duration::from_millis(500));
+        nb_mock.verify().await;
+    }
+
+    #[tokio::test]
+    async fn test_run_exits_promptly_when_shutdown_fires_during_idle_wait() {
+        let nb_mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<Event>::new()))
+            .mount(&nb_mock)
+            .await;
+
+        let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+        let sinks: Vec<Box<dyn Sink>> = vec![];
+        let cursors = HashMap::new();
+        let mut config = test_config();
+        config.check_interval = Duration::from_secs(60);
+        let metrics = Metrics::default();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move {
+            let mut cursors = cursors;
+            run(&nb_client, &sinks, &mut cursors, &config, &metrics, rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(true).unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(
+            result.is_ok(),
+            "run() must exit promptly once shutdown fires during the idle wait, not wait out check_interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_lets_in_flight_cycle_finish_before_exiting() {
+        let nb_mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/events"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(vec![sample_event("1")])
+                    .set_delay(Duration::from_millis(150)),
+            )
+            .mount(&nb_mock)
+            .await;
+
+        let sink_mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/ingest"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&sink_mock)
+            .await;
+
+        let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+        let sinks: Vec<Box<dyn Sink>> = vec![Box::new(HttpSink::new(
+            "test".to_string(),
+            format!("{}/ingest", sink_mock.uri()),
+            Method::POST,
+            vec![],
+            Encoding::Json,
+        ))];
+        let cursors = HashMap::new();
+        let mut config = test_config();
+        config.check_interval = Duration::from_secs(60);
+        let metrics = Metrics::default();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move {
+            let mut cursors = cursors;
+            run(&nb_client, &sinks, &mut cursors, &config, &metrics, rx).await;
+            cursors
+        });
+
+        // Fires while the 150ms-delayed fetch is still in flight.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        tx.send(true).unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("run() did not exit within the timeout")
+            .expect("run() task panicked");
+
+        assert!(
+            result.get("test").copied().flatten().is_some(),
+            "the in-flight cycle must finish and its result apply even though shutdown fired mid-fetch"
+        );
     }
 }
