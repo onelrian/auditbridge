@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible AuditBridge defect
+title: "fix: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include access tokens, headers, or customer audit events.
+  - type: input
+    id: version
+    attributes:
+      label: AuditBridge version or image digest
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized logs
+    validations:
+      required: true
