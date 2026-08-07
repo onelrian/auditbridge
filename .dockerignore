@@ -2,11 +2,9 @@
 .git
 .gitignore
 
-# Rust build output (Exclude debug artifacts, keep release binary for CI COPY)
-target/debug
-target/doc
-target/package
-target/test
+# Rust build output: the image now compiles from source in a builder
+# stage, so none of the host's target/ is needed in the build context.
+target
 
 # IDE settings
 .vscode
