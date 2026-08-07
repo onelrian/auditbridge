@@ -30,8 +30,9 @@ impl NetbirdClient {
 
     pub async fn fetch_events(&self) -> Result<Vec<Event>> {
         let url = format!("{}/api/events", self.base_url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Token {}", self.token))
             .header("Accept", "application/json")
@@ -45,9 +46,11 @@ impl NetbirdClient {
             anyhow::bail!("Netbird API Error: {} - {}", status, body);
         }
 
-        let events = response.json::<Vec<Event>>().await
+        let events = response
+            .json::<Vec<Event>>()
+            .await
             .context("Failed to parse Netbird API response")?;
-            
+
         Ok(events)
     }
 }

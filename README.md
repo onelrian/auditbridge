@@ -4,23 +4,26 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/onelrian/signal)](https://hub.docker.com/r/onelrian/signal)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Signal is a high-performance observability bridge for NetBird. It ingests audit events from the NetBird Management API and ships them directly to Grafana Loki, enabling real-time security monitoring, compliance auditing, and incident response.
+Signal is a high-performance observability bridge for NetBird. It ingests audit events from the NetBird Management API and ships them to Grafana Loki, a Wazuh manager, and/or any generic HTTP endpoint, enabling real-time security monitoring, compliance auditing, and incident response.
 
 ## Features
 
 - **Zero-Dependency Architecture**: Single binary or container; no local database or filesystem required.
-- **Stateful Event Tracking**: Intelligently tracks event cursors to prevent data duplication or loss during restarts.
+- **Pluggable Sinks**: Ship the same event stream to Loki, Wazuh (syslog), and/or a generic HTTP endpoint at once, configured purely via environment variables.
+- **Stateful Event Tracking**: Tracks an independent event cursor per sink, so one sink being down never blocks or duplicates delivery to the others.
 - **Universal Compatibility**: Works seamlessly with both NetBird Cloud and Self-Hosted instances.
 - **Production Hardened**: Written in Rust for minimal memory footprint and high reliability.
 
 ## Architecture
 
-Signal acts as a stateless, highly available middleware between your NetBird control plane and your observability stack.
+Signal acts as a stateless, highly available middleware between your NetBird control plane and your observability/SIEM stack.
 
 ```mermaid
 flowchart LR
     NA[NetBird API] -->|JSON Stream| Signal[Signal Exporter]
     Signal -->|Push API| Loki[Grafana Loki]
+    Signal -->|Syslog RFC5424| Wazuh[Wazuh Manager]
+    Signal -->|HTTP POST| HTTP[Generic HTTP Endpoint]
     Loki -->|LogQL| Grafana[Grafana Dashboards]
 ```
 
