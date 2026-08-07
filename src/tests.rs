@@ -1,13 +1,14 @@
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
+    use crate::cursor;
     use crate::models::Event;
     use crate::netbird::NetbirdClient;
-    use crate::process_cycle;
     use crate::sinks::encoding::Encoding;
     use crate::sinks::http::HttpSink;
     use crate::sinks::syslog::{SyslogProtocol, SyslogSink};
     use crate::sinks::Sink;
+    use crate::{build_initial_cursors, process_cycle};
     use chrono::{DateTime, Utc};
     use reqwest::Method;
     use std::collections::HashMap;
@@ -346,5 +347,86 @@ mod tests {
                 assert_eq!(config.sinks[0].encoding, Encoding::Syslog3164);
             },
         );
+    }
+
+    fn temp_cursor_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "auditbridge-test-{}-{}.json",
+                name,
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn test_cursor_load_missing_file_returns_empty() {
+        let path = temp_cursor_path("missing");
+        let loaded = cursor::load(&path);
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_cursor_load_corrupt_file_returns_empty() {
+        let path = temp_cursor_path("corrupt");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let loaded = cursor::load(&path);
+
+        assert!(
+            loaded.is_empty(),
+            "a corrupt cursor file must not crash the load"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_cursor_save_and_load_round_trip() {
+        let path = temp_cursor_path("roundtrip");
+        let mut cursors = HashMap::new();
+        cursors.insert(
+            "loki".to_string(),
+            "2023-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+        );
+        cursors.insert(
+            "wazuh".to_string(),
+            "2023-06-15T12:30:00Z".parse::<DateTime<Utc>>().unwrap(),
+        );
+
+        cursor::save(&path, &cursors).expect("save should succeed");
+        let loaded = cursor::load(&path);
+
+        assert_eq!(loaded, cursors);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_build_initial_cursors_resumes_from_persisted_state() {
+        let sinks: Vec<Box<dyn Sink>> = vec![
+            Box::new(HttpSink::new(
+                "loki".to_string(),
+                "http://loki/loki/api/v1/push".to_string(),
+                Method::POST,
+                vec![],
+                Encoding::Loki,
+            )),
+            Box::new(SyslogSink::new(
+                "wazuh".to_string(),
+                "127.0.0.1:1514".to_string(),
+                SyslogProtocol::Tcp,
+                Encoding::Syslog3164,
+            )),
+        ];
+
+        let mut persisted = HashMap::new();
+        let loki_ts: DateTime<Utc> = "2023-01-01T00:00:00Z".parse().unwrap();
+        persisted.insert("loki".to_string(), loki_ts);
+        // no entry for "wazuh": never persisted (e.g. first run for that sink)
+
+        let cursors = build_initial_cursors(&sinks, &persisted);
+
+        assert_eq!(cursors.get("loki").copied().flatten(), Some(loki_ts));
+        assert_eq!(cursors.get("wazuh").copied().flatten(), None);
     }
 }

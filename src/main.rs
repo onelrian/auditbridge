@@ -1,4 +1,5 @@
 mod config;
+mod cursor;
 mod models;
 mod netbird;
 mod sinks;
@@ -48,17 +49,53 @@ async fn main() -> Result<()> {
         config.netbird_api_token.clone(),
     );
 
+    let persisted = config
+        .cursor_file
+        .as_deref()
+        .map(cursor::load)
+        .unwrap_or_default();
+    if let Some(path) = &config.cursor_file {
+        info!(
+            "Cursor persistence: {} ({} sink(s) resumed)",
+            path,
+            persisted.len()
+        );
+    }
+
     // Each sink advances its own watermark, so one down sink never blocks or
     // duplicates delivery to the others.
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> =
-        sinks.iter().map(|s| (s.name().to_string(), None)).collect();
+    let mut cursors = build_initial_cursors(&sinks, &persisted);
 
     info!("Started monitoring...");
 
     loop {
         process_cycle(&nb_client, &sinks, &mut cursors).await;
+
+        if let Some(path) = &config.cursor_file {
+            let to_save: HashMap<String, DateTime<Utc>> = cursors
+                .iter()
+                .filter_map(|(name, ts)| ts.map(|ts| (name.clone(), ts)))
+                .collect();
+            if let Err(e) = cursor::save(path, &to_save) {
+                error!("Failed to persist cursor file: {}", e);
+            }
+        }
+
         sleep(config.check_interval).await;
     }
+}
+
+// Seeds each configured sink's cursor from whatever was persisted for it, so
+// a restart with an intact cursor file resumes instead of replaying the
+// account's full audit history into every sink again.
+fn build_initial_cursors(
+    sinks: &[Box<dyn Sink>],
+    persisted: &HashMap<String, DateTime<Utc>>,
+) -> HashMap<String, Option<DateTime<Utc>>> {
+    sinks
+        .iter()
+        .map(|s| (s.name().to_string(), persisted.get(s.name()).copied()))
+        .collect()
 }
 
 // Fetches once per cycle (the NetBird audit endpoint has no server-side
