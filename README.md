@@ -44,7 +44,7 @@ Loki and Wazuh ship as named presets (`SINKS=loki,wazuh` works with zero further
 
 ### Recommended for Production
 
-- **Secrets Management**: Store `NETBIRD_API_TOKEN` in Kubernetes Secrets or Docker Secrets.
+- **Secrets Management**: Docker Secrets and mounted Kubernetes Secret volumes are files, not env vars. Set `NETBIRD_API_TOKEN_FILE` (or `SINK_<NAME>_HEADERS_FILE` for a sink's bearer token/API key) to the mounted file's path instead of putting the value directly in `NETBIRD_API_TOKEN`/`SINK_<NAME>_HEADERS`, so it never shows up in `docker inspect` or a process listing. Setting both the direct var and its `_FILE` counterpart is an error, only one wins.
 - **TLS**: Ensure `LOKI_URL` uses HTTPS if traversing public networks.
 
 ## Quick Start
@@ -77,7 +77,8 @@ Signal is configured entirely via environment variables.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `NETBIRD_API_TOKEN` | NetBird PAT with audit permissions | - | **Yes** |
+| `NETBIRD_API_TOKEN` | NetBird PAT with audit permissions | - | **Yes**, unless `NETBIRD_API_TOKEN_FILE` is set |
+| `NETBIRD_API_TOKEN_FILE` | Path to a file containing the PAT, for Docker/Kubernetes Secrets | - | No |
 | `SINKS` | Comma-separated list of sink names to fan out to | `loki` | No |
 | `NETBIRD_API_URL` | NetBird API base URL (for Self-Hosted) | `https://api.netbird.io` | No |
 | `CHECK_INTERVAL` | Event polling interval (seconds) | `10` | No |
@@ -118,6 +119,7 @@ Any name in `SINKS` besides `loki`/`wazuh` is a fully generic sink, no code chan
 | `SINK_<NAME>_URL` | Destination URL (`http` transport) |
 | `SINK_<NAME>_METHOD` | HTTP method, defaults to `POST` (`http` transport) |
 | `SINK_<NAME>_HEADERS` | `Key1:Value1,Key2:Value2` (`http` transport, optional) |
+| `SINK_<NAME>_HEADERS_FILE` | Path to a file containing the same `Key1:Value1,...` format, instead of `SINK_<NAME>_HEADERS` directly |
 | `SINK_<NAME>_ADDR` | Destination `host:port` (`syslog` transport) |
 | `SINK_<NAME>_PROTOCOL` | `tcp` or `udp`, defaults to `tcp` (`syslog` transport) |
 

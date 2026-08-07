@@ -63,8 +63,8 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.netbird.io".to_string())
                 .trim_end_matches('/')
                 .to_string(),
-            netbird_api_token: env::var("NETBIRD_API_TOKEN")
-                .context("NETBIRD_API_TOKEN is required")?,
+            netbird_api_token: resolve_secret("NETBIRD_API_TOKEN")?
+                .context("NETBIRD_API_TOKEN or NETBIRD_API_TOKEN_FILE is required")?,
             check_interval: Duration::from_secs(
                 env::var("CHECK_INTERVAL")
                     .unwrap_or_else(|_| "10".to_string())
@@ -82,6 +82,27 @@ impl Config {
     }
 }
 
+// Reads `name` from the environment, or `{name}_FILE`'s file contents if
+// that's set instead (the standard convention for Docker/Kubernetes Secrets
+// mounted as files, since raw env vars show up in `docker inspect` and
+// process listings). Errs if both are set, ambiguous which was meant.
+fn resolve_secret(name: &str) -> Result<Option<String>> {
+    let file_var = format!("{}_FILE", name);
+    let direct = env::var(name).ok();
+    let file_path = env::var(&file_var).ok();
+
+    match (direct, file_path) {
+        (Some(_), Some(_)) => anyhow::bail!("Both {} and {} are set, set only one", name, file_var),
+        (Some(v), None) => Ok(Some(v)),
+        (None, Some(path)) => {
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {} at '{}'", file_var, path))?;
+            Ok(Some(contents.trim().to_string()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 // Split out for unit testing without the process-wide env dependency of `from_env`.
 fn parse_sinks(sinks_var: &str) -> Result<Vec<SinkSpec>> {
     sinks_var
@@ -95,6 +116,7 @@ fn parse_sinks(sinks_var: &str) -> Result<Vec<SinkSpec>> {
 fn parse_sink_spec(name: &str) -> Result<SinkSpec> {
     let prefix = format!("SINK_{}_", name.to_uppercase());
     let var = |suffix: &str| env::var(format!("{}{}", prefix, suffix)).ok();
+    let secret_var = |suffix: &str| resolve_secret(&format!("{}{}", prefix, suffix));
 
     // "loki" and "wazuh" get zero-config defaults for the two integrations
     // this project documents out of the box. Any other name is a fully
@@ -143,7 +165,10 @@ fn parse_sink_spec(name: &str) -> Result<SinkSpec> {
         None => Method::POST,
     };
 
-    let headers = var("HEADERS")
+    // HEADERS supports _FILE too: it's where HTTP sink credentials live
+    // (e.g. `Authorization:Bearer <token>`), not just the sink's own token
+    // vars, since headers are the only place this project models them.
+    let headers = secret_var("HEADERS")?
         .map(|raw| parse_headers(&raw))
         .transpose()?
         .unwrap_or_default();
