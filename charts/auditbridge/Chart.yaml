@@ -1,0 +1,11 @@
+apiVersion: v2
+name: auditbridge
+description: Export NetBird audit events to observability and SIEM sinks
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - netbird
+  - audit
+  - observability
+  - security
