@@ -79,10 +79,47 @@ async fn main() -> Result<()> {
         }
     });
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        info!("Shutdown signal received, stopping after the in-flight cycle completes");
+        let _ = shutdown_tx.send(true);
+    });
+
     info!("Started monitoring...");
 
+    run(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &config,
+        &metrics,
+        shutdown_rx,
+    )
+    .await;
+
+    info!("Shutdown complete");
+    Ok(())
+}
+
+// Waits until the process finishes the poll cycle it's currently in (its
+// duration already bounded by RETRY_MAX_ATTEMPTS/RETRY_MAX_DELAY_MS on the
+// fetch and each sink's send) before stopping, rather than aborting a batch
+// mid-send. Only the idle wait between cycles gets interrupted immediately.
+async fn run(
+    nb_client: &NetbirdClient,
+    sinks: &[Box<dyn Sink>],
+    cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    config: &Config,
+    metrics: &Metrics,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     loop {
-        process_cycle(&nb_client, &sinks, &mut cursors, &config.retry, &metrics).await;
+        if *shutdown_rx.borrow() {
+            return;
+        }
+
+        process_cycle(nb_client, sinks, cursors, &config.retry, metrics).await;
 
         if let Some(path) = &config.cursor_file {
             let to_save: HashMap<String, DateTime<Utc>> = cursors
@@ -94,7 +131,38 @@ async fn main() -> Result<()> {
             }
         }
 
-        sleep(config.check_interval).await;
+        if *shutdown_rx.borrow() {
+            return;
+        }
+
+        tokio::select! {
+            _ = sleep(config.check_interval) => {}
+            _ = shutdown_rx.changed() => {}
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install SIGINT handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }
 
