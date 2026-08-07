@@ -45,6 +45,10 @@ pub struct Config {
     pub netbird_api_token: String,
     pub check_interval: Duration,
     pub sinks: Vec<SinkSpec>,
+    // Persistence is opt-in: it's only meaningful with a mounted persistent
+    // volume, so defaulting it on in a container with no such volume would
+    // just mean a silently-discarded file every restart.
+    pub cursor_file: Option<String>,
 }
 
 impl Config {
@@ -65,6 +69,7 @@ impl Config {
                     .unwrap_or(10),
             ),
             sinks,
+            cursor_file: env::var("CURSOR_FILE").ok(),
         })
     }
 }

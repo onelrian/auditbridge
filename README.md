@@ -117,6 +117,16 @@ docker run -d --name signal \
   ghcr.io/onelrian/auditbridge:latest
 ```
 
+#### Cursor Persistence
+
+By default, each sink's delivery cursor lives only in memory: a restart re-fetches the account's full audit history and re-ships every event to every sink as if new. Set `CURSOR_FILE` to a path on a mounted persistent volume to resume from the last confirmed watermark instead.
+
+| Variable | Description | Default |
+|---|---|---|
+| `CURSOR_FILE` | Path to a JSON file tracking each sink's last-delivered timestamp | unset (no persistence) |
+
+This only helps if the path survives a restart, a bind mount in Docker, a PVC in Kubernetes. Without one, `CURSOR_FILE` just gets recreated empty every time the container restarts, which is harmless but pointless.
+
 ### Docker Compose (Production)
 
 ```yaml
@@ -141,7 +151,14 @@ services:
       - LOKI_URL=http://loki:3100
       - CHECK_INTERVAL=30
       - RUST_LOG=info
-    
+      - CURSOR_FILE=/data/cursor.json
+
+    # Cursor persistence: without this volume, CURSOR_FILE still works but
+    # resets on every restart (read_only above still allows writes here,
+    # since it's a mounted volume, not the container's root filesystem).
+    volumes:
+      - signal-cursor:/data
+
     # Dependencies
     depends_on:
       - loki
@@ -153,6 +170,9 @@ services:
 networks:
   monitoring:
     driver: bridge
+
+volumes:
+  signal-cursor:
 ```
 
 ### Kubernetes Deployment
@@ -185,7 +205,28 @@ spec:
             secretKeyRef:
               name: netbird-secrets
               key: api-token
+        - name: CURSOR_FILE
+          value: "/data/cursor.json"
+        volumeMounts:
+        - name: cursor
+          mountPath: /data
+      volumes:
+      - name: cursor
+        persistentVolumeClaim:
+          claimName: signal-cursor
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: signal-cursor
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Mi
 ```
+
+A `PersistentVolumeClaim` is required here. `emptyDir` only survives in-place container restarts, not pod rescheduling, so it doesn't actually solve the problem this section exists for.
 
 
 ## Monitoring & Observability
