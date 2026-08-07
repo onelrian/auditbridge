@@ -396,6 +396,89 @@ mod tests {
         );
     }
 
+    fn temp_secret_file(name: &str, contents: &str) -> String {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "auditbridge-test-secret-{}-{}",
+                name,
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_config_netbird_token_file_reads_and_trims_file_contents() {
+        let path = temp_secret_file("token", "nbp_from_file\n");
+
+        temp_env::with_vars(
+            [
+                ("NETBIRD_API_TOKEN", None),
+                ("NETBIRD_API_TOKEN_FILE", Some(path.as_str())),
+            ],
+            || {
+                let config = Config::from_env().unwrap();
+                assert_eq!(config.netbird_api_token, "nbp_from_file");
+            },
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_config_netbird_token_both_direct_and_file_is_an_error() {
+        let path = temp_secret_file("token-conflict", "nbp_from_file");
+
+        temp_env::with_vars(
+            [
+                ("NETBIRD_API_TOKEN", Some("nbp_direct")),
+                ("NETBIRD_API_TOKEN_FILE", Some(path.as_str())),
+            ],
+            || {
+                let result = Config::from_env();
+                assert!(
+                    result.is_err(),
+                    "setting both the direct var and _FILE is ambiguous"
+                );
+            },
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_config_sink_headers_file_reads_credentials_from_file() {
+        let path = temp_secret_file("headers", "Authorization:Bearer secret-token\n");
+
+        temp_env::with_vars(
+            [
+                ("NETBIRD_API_TOKEN", Some("test_token")),
+                ("SINKS", Some("datadog")),
+                (
+                    "SINK_DATADOG_URL",
+                    Some("https://http-intake.example/v1/logs"),
+                ),
+                ("SINK_DATADOG_ENCODING", Some("json")),
+                ("SINK_DATADOG_TRANSPORT", Some("http")),
+                ("SINK_DATADOG_HEADERS_FILE", Some(path.as_str())),
+            ],
+            || {
+                let config = Config::from_env().unwrap();
+                assert_eq!(
+                    config.sinks[0].headers,
+                    vec![(
+                        "Authorization".to_string(),
+                        "Bearer secret-token".to_string()
+                    )]
+                );
+            },
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
     fn temp_cursor_path(name: &str) -> String {
         std::env::temp_dir()
             .join(format!(
