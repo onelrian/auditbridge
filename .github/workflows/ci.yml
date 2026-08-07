@@ -154,6 +154,7 @@ jobs:
 
   publish-chart:
     if: startsWith(github.ref, 'refs/tags/chart-v')
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
