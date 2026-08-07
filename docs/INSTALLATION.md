@@ -16,8 +16,9 @@ docker run --rm --name auditbridge \
   ghcr.io/onelrian/auditbridge:<immutable-tag>
 ```
 
-Replace `<immutable-tag>` with a released application version. Do not use
-`latest` in a production deployment.
+> [!WARNING]
+> Replace `<immutable-tag>` with a released application version. Do not use
+> `latest` in a production deployment, it moves whenever a new release ships.
 
 ## Docker Compose
 
@@ -44,8 +45,9 @@ volumes:
 
 ## Kubernetes and Helm
 
-Use the chart after the corresponding application and chart releases exist.
-It expects an existing Secret and does not create credentials:
+The chart expects an existing Secret and does not create credentials. Chart
+releases are versioned independently from application releases, `<chart-version>`
+below is a `charts/auditbridge/Chart.yaml` version, not an app image tag:
 
 ```bash
 helm install auditbridge oci://ghcr.io/onelrian/charts/auditbridge \

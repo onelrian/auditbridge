@@ -29,4 +29,6 @@ case and underscores:
 | `SINK_<NAME>_ADDR` | syslog | Destination `host:port` |
 | `SINK_<NAME>_PROTOCOL` | syslog | `tcp` or `udp`, default `tcp` |
 
-Use the `_HEADERS_FILE` form for bearer tokens and API keys.
+> [!TIP]
+> Use the `_HEADERS_FILE` form for bearer tokens and API keys, mounted from a
+> Docker or Kubernetes secret, instead of `SINK_<NAME>_HEADERS` directly.

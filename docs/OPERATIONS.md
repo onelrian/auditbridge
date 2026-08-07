@@ -1,5 +1,8 @@
 # Operations
 
+See the [Verified section of the root README](../README.md#verified) for a
+real, reproducible end-to-end run of everything on this page.
+
 ## Health and metrics
 
 The HTTP server exposes these endpoints on `METRICS_PORT`:

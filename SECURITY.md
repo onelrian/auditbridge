@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Security fixes are applied to the current `main` branch before the first
-release. After releases begin, the latest supported release line receives
-security fixes.
+Security fixes are applied to the latest released version and to `main`.
+Older released versions do not receive backported fixes; upgrade to the
+latest release to pick up a security fix.
 
 ## Reporting a vulnerability
 
