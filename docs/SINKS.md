@@ -46,15 +46,16 @@ docker compose exec loki wget -qO- \
   'http://localhost:3100/loki/api/v1/query_range?query=%7Bjob%3D%22netbird-events%22%7D'
 ```
 
-Real response from the demo (three events, one stream per activity):
+Real response from the demo (three events, one stream per activity; Loki 3.x
+adds the `service_name` label it derives from `job`):
 
 ```json
 {"status":"success","data":{"resultType":"streams","result":[
-  {"stream":{"account_id":"acc-demo-01","activity":"User login","activity_code":"user.login","job":"netbird-events"},
+  {"stream":{"account_id":"acc-demo-01","activity":"User login","activity_code":"user.login","job":"netbird-events","service_name":"netbird-events"},
    "values":[["1786538589000000000","{\"account_id\":\"acc-demo-01\",\"activity\":\"User login\",\"activity_code\":\"user.login\",\"event_id\":\"evt-1003\",\"initiator_email\":\"alice@example.com\",\"initiator_id\":\"user-alice\",\"initiator_name\":\"Alice Example\",\"meta\":null,\"target_id\":null,\"timestamp\":\"2026-08-12T12:43:09Z\"}"]]},
-  {"stream":{"account_id":"acc-demo-01","activity":"Peer added","activity_code":"peer.add","job":"netbird-events"},
+  {"stream":{"account_id":"acc-demo-01","activity":"Peer added","activity_code":"peer.add","job":"netbird-events","service_name":"netbird-events"},
    "values":[["1786538581000000000","{\"account_id\":\"acc-demo-01\",\"activity\":\"Peer added\",\"activity_code\":\"peer.add\",\"event_id\":\"evt-1001\",\"initiator_email\":\"alice@example.com\",\"initiator_id\":\"user-alice\",\"initiator_name\":\"Alice Example\",\"meta\":{\"peer_name\":\"laptop-alice\"},\"target_id\":\"peer-7f3a\",\"timestamp\":\"2026-08-12T12:43:01Z\"}"]]},
-  {"stream":{"account_id":"acc-demo-01","activity":"Group created","activity_code":"group.add","job":"netbird-events"},
+  {"stream":{"account_id":"acc-demo-01","activity":"Group created","activity_code":"group.add","job":"netbird-events","service_name":"netbird-events"},
    "values":[["1786538585000000000","{\"account_id\":\"acc-demo-01\",\"activity\":\"Group created\",\"activity_code\":\"group.add\",\"event_id\":\"evt-1002\",\"initiator_email\":\"bob@example.com\",\"initiator_id\":\"user-bob\",\"initiator_name\":\"Bob Example\",\"meta\":{\"group_name\":\"engineering\"},\"target_id\":\"group-eng\",\"timestamp\":\"2026-08-12T12:43:05Z\"}"]]}
 ]}}
 ```
@@ -108,7 +109,9 @@ stable alphabetical order, e.g.:
 ```xml
 <decoder name="netbird-audit">
   <prematch>auditbridge netbird-audit</prematch>
-  <regex>auditbridge netbird-audit: \{"activity_code":"(\S+)"</regex>
+  <!-- The JSON keys are alphabetical, so activity_code is not the first
+       key: match it anywhere after the tag instead of anchoring on '{'. -->
+  <regex>"activity_code":"(\S+)"</regex>
   <order>status</order>
 </decoder>
 ```
