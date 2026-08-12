@@ -20,3 +20,7 @@ target/
 .vscode/
 .idea/
 *.swp
+
+# Scratch issue bodies used when filing GitHub issues
+.issue-bodies/
+.git/COMMIT_MSG_*

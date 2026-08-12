@@ -13,6 +13,15 @@ services:
     command: ["python3", "-u", "/syslog_receiver.py"]
     networks: [demo]
 
+  # Generic HTTP intake endpoint: proves the generic http sink delivers its
+  # chosen encoding (ndjson below) with the configured headers.
+  webhook-receiver:
+    image: python:3.12-slim
+    volumes:
+      - ./webhook_receiver.py:/webhook_receiver.py:ro
+    command: ["python3", "-u", "/webhook_receiver.py"]
+    networks: [demo]
+
   loki:
     image: grafana/loki:3.2.1
     command: ["-config.file=/etc/loki/local-config.yaml"]
@@ -32,6 +41,31 @@ services:
     ports:
       - "19090:9090"
     depends_on: [mock-netbird, loki, wazuh-receiver]
+    networks: [demo]
+
+  # Second instance proving the generic http and generic syslog sinks: one
+  # webhook sink (http + ndjson + custom header) and one syslog sink
+  # (udp + RFC5424). Both are pure configuration, no different binary.
+  auditbridge-generic:
+    build:
+      context: ../..
+    environment:
+      NETBIRD_API_URL: "http://mock-netbird:8080"
+      NETBIRD_API_TOKEN: "demo-token-not-real"
+      SINKS: "webhook,sysloggen"
+      SINK_WEBHOOK_TRANSPORT: "http"
+      SINK_WEBHOOK_URL: "http://webhook-receiver:9099/ingest"
+      SINK_WEBHOOK_ENCODING: "ndjson"
+      SINK_WEBHOOK_HEADERS: "X-Demo:auditbridge"
+      SINK_SYSLOGGEN_TRANSPORT: "syslog"
+      SINK_SYSLOGGEN_ADDR: "wazuh-receiver:1515"
+      SINK_SYSLOGGEN_PROTOCOL: "udp"
+      SINK_SYSLOGGEN_ENCODING: "syslog5424"
+      CHECK_INTERVAL: "5"
+      RUST_LOG: "info"
+    ports:
+      - "19091:9090"
+    depends_on: [mock-netbird, webhook-receiver, wazuh-receiver]
     networks: [demo]
 
 networks:

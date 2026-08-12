@@ -57,18 +57,27 @@ names and troubleshooting.
 
 ## Verified
 
-The screenshots below are real output from a live run: real Loki, a real
-syslog receiver, and AuditBridge's actual binary, with only the upstream
-NetBird API stubbed to fixed sample data (no live account involved).
+Every sink type is verified end to end in [examples/local-demo](examples/local-demo/README.md):
+real Loki, real TCP and UDP syslog receivers, a real HTTP webhook receiver, and
+AuditBridge's actual binary — only the NetBird API is stubbed to fixed sample
+data, no live account involved. The evidence below is real output captured from
+that compose stack, reproduced with one `docker compose up -d --build`.
 
-![Live delivery to Loki and Wazuh](docs/images/live-delivery.png)
-![Delivered events queried back from Loki](docs/images/live-loki-query.png)
-![Live /healthz, /readyz, and /metrics output](docs/images/live-health-metrics.png)
+| Sink | Delivery | Captured evidence |
+|---|---|---|
+| Grafana Loki | `SINKS=loki` | Loki query response, one stream per activity, nanosecond timestamps |
+| Wazuh | `SINKS=wazuh`, `SINK_WAZUH_ADDR` | RFC 3164 frames received over TCP |
+| Generic HTTP | `SINK_<NAME>_TRANSPORT=http` | `application/x-ndjson` `POST /ingest` received at the webhook |
+| Generic syslog | `SINK_<NAME>_TRANSPORT=syslog` | RFC 5424 frames received over UDP |
+
+Each section in [Sinks](docs/SINKS.md) pairs the complete configuration with
+its verification commands and the captured output, including readyz/metrics
+showing per-sink delivered totals.
 
 > [!TIP]
-> Don't take the screenshots' word for it: `examples/local-demo/` reproduces
-> this exact setup with one `docker compose up`. See
-> [examples/local-demo/README.md](examples/local-demo/README.md).
+> Don't take this page's word for it: `examples/local-demo/` reproduces the
+exact setup with one command, and every block above is re-capturable from its
+logs and endpoints. See [examples/local-demo/README.md](examples/local-demo/README.md).
 
 ## License
 
