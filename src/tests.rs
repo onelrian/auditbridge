@@ -35,6 +35,7 @@ fn test_config() -> Config {
         sinks: vec![],
         cursor_file: None,
         retry: no_retry(),
+        batch_size: 500,
         metrics_port: 0,
     }
 }
@@ -188,6 +189,7 @@ async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
         &sinks,
         &mut cursors,
         &no_retry(),
+        500,
         &Metrics::default(),
     )
     .await;
@@ -231,6 +233,7 @@ async fn test_process_cycle_advances_watermark_on_send_success() {
         &sinks,
         &mut cursors,
         &no_retry(),
+        500,
         &Metrics::default(),
     )
     .await;
@@ -289,6 +292,7 @@ async fn test_process_cycle_one_failing_sink_does_not_block_the_other() {
         &sinks,
         &mut cursors,
         &no_retry(),
+        500,
         &Metrics::default(),
     )
     .await;
@@ -810,5 +814,168 @@ async fn test_run_lets_in_flight_cycle_finish_before_exiting() {
     assert!(
         result.get("test").copied().flatten().is_some(),
         "the in-flight cycle must finish and its result apply even though shutdown fired mid-fetch"
+    );
+}
+
+fn sink_for(mock: &MockServer) -> Box<dyn Sink> {
+    Box::new(HttpSink::new(
+        "sink".to_string(),
+        format!("{}/ingest", mock.uri()),
+        Method::POST,
+        vec![],
+        Encoding::Json,
+    ))
+}
+
+async fn mount_events(mock: &MockServer, events: Vec<Event>) {
+    Mock::given(method("GET"))
+        .and(path("/api/events/audit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(events))
+        .mount(mock)
+        .await;
+}
+
+async fn received_batch_sizes(mock: &MockServer) -> Vec<usize> {
+    mock.received_requests()
+        .await
+        .expect("no requests received")
+        .iter()
+        .map(|req| {
+            serde_json::from_slice::<Vec<Event>>(&req.body)
+                .unwrap()
+                .len()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn test_process_cycle_splits_large_batches_into_chunks() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(
+        &nb_mock,
+        vec![sample_event("1"), sample_event("2"), sample_event("3")],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        2,
+        &Metrics::default(),
+    )
+    .await;
+
+    assert_eq!(
+        received_batch_sizes(&sink_mock).await,
+        vec![2, 1],
+        "3 events with batch_size 2 must produce two requests of 2 and 1"
+    );
+    assert!(
+        cursors.get("sink").copied().flatten().is_some(),
+        "watermark must advance once every chunk delivered"
+    );
+}
+
+#[tokio::test]
+async fn test_process_cycle_batch_size_zero_disables_chunking() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(
+        &nb_mock,
+        vec![sample_event("1"), sample_event("2"), sample_event("3")],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        0,
+        &Metrics::default(),
+    )
+    .await;
+
+    assert_eq!(received_batch_sizes(&sink_mock).await, vec![3]);
+}
+
+#[tokio::test]
+async fn test_process_cycle_does_not_advance_watermark_when_a_chunk_fails() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(&nb_mock, vec![sample_event("1"), sample_event("2")]).await;
+
+    // First chunk succeeds, second chunk is rejected: mocks match in mount
+    // order, and the 200 response is exhausted after one use.
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .up_to_n_times(1)
+        .mount(&sink_mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        1,
+        &Metrics::default(),
+    )
+    .await;
+
+    assert_eq!(
+        cursors.get("sink").copied().flatten(),
+        None,
+        "watermark must not advance when any chunk fails, so nothing is skipped"
+    );
+}
+
+#[test]
+fn test_config_batch_size_defaults_to_500_and_parses_env() {
+    temp_env::with_vars(
+        [
+            ("NETBIRD_API_TOKEN", Some("test_token")),
+            ("BATCH_SIZE", None),
+        ],
+        || assert_eq!(Config::from_env().unwrap().batch_size, 500),
+    );
+
+    temp_env::with_vars(
+        [
+            ("NETBIRD_API_TOKEN", Some("test_token")),
+            ("BATCH_SIZE", Some("7")),
+        ],
+        || assert_eq!(Config::from_env().unwrap().batch_size, 7),
     );
 }

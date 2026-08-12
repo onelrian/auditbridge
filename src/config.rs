@@ -51,6 +51,8 @@ pub struct Config {
     // just mean a silently-discarded file every restart.
     pub cursor_file: Option<String>,
     pub retry: RetryConfig,
+    // 0 means "no chunking": send the whole pending batch in one request.
+    pub batch_size: usize,
     pub metrics_port: u16,
 }
 
@@ -74,6 +76,10 @@ impl Config {
             sinks,
             cursor_file: env::var("CURSOR_FILE").ok(),
             retry: RetryConfig::from_env(),
+            batch_size: env::var("BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500),
             metrics_port: env::var("METRICS_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
