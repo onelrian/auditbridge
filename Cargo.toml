@@ -6,12 +6,6 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 
-# Async SQLite wrapper for tokio - REMOVED
-# tokio-rusqlite = "0.7"
-
-# Must match tokio-rusqlite's compatible rusqlite version.
-# rusqlite = { version = "0.37", features = ["bundled"] }
-
 # HTTP client for Loki - use native-tls to match OpenSSL 1.1
 reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "native-tls"] }
 
@@ -36,9 +30,6 @@ axum = "0.7"
 # Logging + tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-
-# Optional: environment variable loading
-# dotenvy = "0.15" 
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -12,6 +12,7 @@ mod tests;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use config::Config;
+use cursor::SinkCursor;
 use metrics::Metrics;
 use netbird::NetbirdClient;
 use retry::{with_retry, RetryConfig};
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
         config.netbird_api_token.clone(),
     );
 
-    let persisted = config
+    let persisted: HashMap<String, SinkCursor> = config
         .cursor_file
         .as_deref()
         .map(cursor::load)
@@ -109,7 +110,7 @@ async fn main() -> Result<()> {
 async fn run(
     nb_client: &NetbirdClient,
     sinks: &[Box<dyn Sink>],
-    cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    cursors: &mut HashMap<String, SinkCursor>,
     config: &Config,
     metrics: &Metrics,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -122,9 +123,9 @@ async fn run(
         process_cycle(nb_client, sinks, cursors, &config.retry, metrics).await;
 
         if let Some(path) = &config.cursor_file {
-            let to_save: HashMap<String, DateTime<Utc>> = cursors
+            let to_save: HashMap<String, SinkCursor> = cursors
                 .iter()
-                .filter_map(|(name, ts)| ts.map(|ts| (name.clone(), ts)))
+                .filter_map(|(name, c)| c.timestamp.map(|_| (name.clone(), c.clone())))
                 .collect();
             if let Err(e) = cursor::save(path, &to_save) {
                 error!("Failed to persist cursor file: {}", e);
@@ -171,11 +172,16 @@ async fn shutdown_signal() {
 // account's full audit history into every sink again.
 fn build_initial_cursors(
     sinks: &[Box<dyn Sink>],
-    persisted: &HashMap<String, DateTime<Utc>>,
-) -> HashMap<String, Option<DateTime<Utc>>> {
+    persisted: &HashMap<String, SinkCursor>,
+) -> HashMap<String, SinkCursor> {
     sinks
         .iter()
-        .map(|s| (s.name().to_string(), persisted.get(s.name()).copied()))
+        .map(|s| {
+            (
+                s.name().to_string(),
+                persisted.get(s.name()).cloned().unwrap_or_default(),
+            )
+        })
         .collect()
 }
 
@@ -185,7 +191,7 @@ fn build_initial_cursors(
 async fn process_cycle(
     nb_client: &NetbirdClient,
     sinks: &[Box<dyn Sink>],
-    cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    cursors: &mut HashMap<String, SinkCursor>,
     retry_cfg: &RetryConfig,
     metrics: &Metrics,
 ) {
@@ -205,13 +211,20 @@ async fn process_cycle(
     events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
     for sink in sinks {
-        let cursor = cursors.entry(sink.name().to_string()).or_insert(None);
+        let cursor = cursors.entry(sink.name().to_string()).or_default();
 
         let mut pending = events.clone();
-        if let Some(last_ts) = *cursor {
+        if let Some(last_ts) = cursor.timestamp {
+            // Strictly newer events are pending; events exactly at the
+            // watermark are pending only if they were not delivered before,
+            // which tracks events NetBird surfaces later with a timestamp
+            // equal to an already-delivered one.
             pending.retain(|e| {
                 DateTime::parse_from_rfc3339(&e.timestamp)
-                    .map(|ts| ts.with_timezone(&Utc) > last_ts)
+                    .map(|ts| {
+                        let ts = ts.with_timezone(&Utc);
+                        ts > last_ts || (ts == last_ts && !cursor.delivered_ids.contains(&e.id))
+                    })
                     .unwrap_or(false)
             });
         }
@@ -226,7 +239,19 @@ async fn process_cycle(
             Ok(_) => {
                 if let Some(last_event) = pending.last() {
                     if let Ok(ts) = DateTime::parse_from_rfc3339(&last_event.timestamp) {
-                        *cursor = Some(ts.with_timezone(&Utc));
+                        let ts = ts.with_timezone(&Utc);
+                        cursor.timestamp = Some(ts);
+                        // Only IDs at the watermark matter; a later, higher
+                        // watermark replaces this set wholesale.
+                        cursor.delivered_ids = pending
+                            .iter()
+                            .filter(|e| {
+                                DateTime::parse_from_rfc3339(&e.timestamp)
+                                    .map(|t| t.with_timezone(&Utc) == ts)
+                                    .unwrap_or(false)
+                            })
+                            .map(|e| e.id.clone())
+                            .collect();
                     }
                 }
                 metrics.record_sink_success(sink.name(), count);

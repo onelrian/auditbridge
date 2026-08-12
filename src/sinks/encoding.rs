@@ -1,6 +1,6 @@
 use crate::models::Event;
 use anyhow::{bail, Result};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -183,5 +183,15 @@ fn timestamp_to_nanoseconds(timestamp: &str) -> String {
             DateTime::parse_from_rfc3339(&format!("{}+00:00", ts))
         })
         .map(|dt| (dt.timestamp_nanos_opt().unwrap_or(0)).to_string())
-        .unwrap_or_else(|_| Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string())
+        .unwrap_or_else(|_| {
+            // Never rewrite an audit timestamp to the wall-clock "now": it
+            // would be nondeterministic across polls and mislabel the
+            // event's time. Epoch 0 is a stable sentinel, and the warning
+            // makes the malformed data visible instead of silently hiding it.
+            tracing::warn!(
+                "Unparseable event timestamp '{}', encoding as epoch 0",
+                timestamp
+            );
+            "0".to_string()
+        })
 }

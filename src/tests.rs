@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::cursor;
+use crate::cursor::{self, SinkCursor};
 use crate::metrics::{router, Metrics};
 use crate::models::Event;
 use crate::netbird::NetbirdClient;
@@ -181,7 +181,7 @@ async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
         vec![],
         Encoding::Json,
     ))];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -193,7 +193,7 @@ async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
     .await;
 
     assert_eq!(
-        cursors.get("flaky").copied().flatten(),
+        cursors.get("flaky").and_then(|c| c.timestamp),
         None,
         "watermark must not advance when the sink write fails"
     );
@@ -224,7 +224,7 @@ async fn test_process_cycle_advances_watermark_on_send_success() {
         vec![],
         Encoding::Json,
     ))];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -236,7 +236,7 @@ async fn test_process_cycle_advances_watermark_on_send_success() {
     .await;
 
     assert!(
-        cursors.get("generic").copied().flatten().is_some(),
+        cursors.get("generic").and_then(|c| c.timestamp).is_some(),
         "watermark must advance once delivery is confirmed"
     );
 }
@@ -282,7 +282,7 @@ async fn test_process_cycle_one_failing_sink_does_not_block_the_other() {
             Encoding::Json,
         )),
     ];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -293,8 +293,8 @@ async fn test_process_cycle_one_failing_sink_does_not_block_the_other() {
     )
     .await;
 
-    assert_eq!(cursors.get("down").copied().flatten(), None);
-    assert!(cursors.get("up").copied().flatten().is_some());
+    assert_eq!(cursors.get("down").and_then(|c| c.timestamp), None);
+    assert!(cursors.get("up").and_then(|c| c.timestamp).is_some());
 }
 
 #[test]
@@ -515,11 +515,17 @@ fn test_cursor_save_and_load_round_trip() {
     let mut cursors = HashMap::new();
     cursors.insert(
         "loki".to_string(),
-        "2023-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+        SinkCursor {
+            timestamp: Some("2023-01-01T00:00:00Z".parse().unwrap()),
+            delivered_ids: vec!["e1".to_string(), "e2".to_string()],
+        },
     );
     cursors.insert(
         "wazuh".to_string(),
-        "2023-06-15T12:30:00Z".parse::<DateTime<Utc>>().unwrap(),
+        SinkCursor {
+            timestamp: Some("2023-06-15T12:30:00Z".parse().unwrap()),
+            delivered_ids: vec![],
+        },
     );
 
     cursor::save(&path, &cursors).expect("save should succeed");
@@ -549,13 +555,23 @@ fn test_build_initial_cursors_resumes_from_persisted_state() {
 
     let mut persisted = HashMap::new();
     let loki_ts: DateTime<Utc> = "2023-01-01T00:00:00Z".parse().unwrap();
-    persisted.insert("loki".to_string(), loki_ts);
+    persisted.insert(
+        "loki".to_string(),
+        SinkCursor {
+            timestamp: Some(loki_ts),
+            delivered_ids: vec!["e1".to_string()],
+        },
+    );
     // no entry for "wazuh": never persisted (e.g. first run for that sink)
 
     let cursors = build_initial_cursors(&sinks, &persisted);
 
-    assert_eq!(cursors.get("loki").copied().flatten(), Some(loki_ts));
-    assert_eq!(cursors.get("wazuh").copied().flatten(), None);
+    assert_eq!(cursors.get("loki").and_then(|c| c.timestamp), Some(loki_ts));
+    assert_eq!(
+        cursors.get("loki").map(|c| c.delivered_ids.clone()),
+        Some(vec!["e1".to_string()])
+    );
+    assert_eq!(cursors.get("wazuh").and_then(|c| c.timestamp), None);
 }
 
 fn fast_retry(max_attempts: u32) -> RetryConfig {
@@ -808,7 +824,108 @@ async fn test_run_lets_in_flight_cycle_finish_before_exiting() {
         .expect("run() task panicked");
 
     assert!(
-        result.get("test").copied().flatten().is_some(),
+        result.get("test").and_then(|c| c.timestamp).is_some(),
         "the in-flight cycle must finish and its result apply even though shutdown fired mid-fetch"
+    );
+}
+
+#[test]
+fn test_cursor_load_migrates_legacy_timestamp_only_format() {
+    let path = temp_cursor_path("legacy");
+    std::fs::write(&path, r#"{"loki":"2023-01-01T00:00:00Z"}"#).unwrap();
+
+    let loaded = cursor::load(&path);
+
+    assert_eq!(
+        loaded.get("loki").and_then(|c| c.timestamp),
+        Some("2023-01-01T00:00:00Z".parse().unwrap())
+    );
+    assert!(loaded["loki"].delivered_ids.is_empty());
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn test_process_cycle_delivers_new_same_timestamp_events_without_resending_old() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/events/audit"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(vec![sample_event("a"), sample_event("b")]),
+        )
+        .mount(&nb_mock)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(HttpSink::new(
+        "sink".to_string(),
+        format!("{}/ingest", sink_mock.uri()),
+        Method::POST,
+        vec![],
+        Encoding::Json,
+    ))];
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        &Metrics::default(),
+    )
+    .await;
+
+    // A later poll surfaces a NEW event ("c") with the same timestamp as the
+    // two already delivered; sample_event() gives every event the same
+    // timestamp on purpose.
+    nb_mock.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/events/audit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(vec![
+            sample_event("a"),
+            sample_event("b"),
+            sample_event("c"),
+        ]))
+        .mount(&nb_mock)
+        .await;
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        &Metrics::default(),
+    )
+    .await;
+
+    let requests = sink_mock
+        .received_requests()
+        .await
+        .expect("no requests received");
+    assert_eq!(requests.len(), 2, "expected exactly two deliveries");
+
+    let first: Vec<Event> = serde_json::from_slice(&requests[0].body).unwrap();
+    let second: Vec<Event> = serde_json::from_slice(&requests[1].body).unwrap();
+    let delivered: Vec<Vec<&str>> = [&first, &second]
+        .iter()
+        .map(|batch| batch.iter().map(|e| e.id.as_str()).collect())
+        .collect();
+
+    assert_eq!(delivered[0], vec!["a", "b"], "first poll delivers both");
+    assert_eq!(
+        delivered[1],
+        vec!["c"],
+        "the new same-timestamp event is delivered, the old ones are not resent"
+    );
+    assert_eq!(
+        cursors.get("sink").unwrap().delivered_ids,
+        vec!["c".to_string()]
     );
 }

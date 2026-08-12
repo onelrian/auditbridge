@@ -55,6 +55,20 @@ AuditBridge serves `/healthz`, `/readyz`, and `/metrics` on `METRICS_PORT`
 at least one configured sink. See [Operations](docs/OPERATIONS.md) for metric
 names and troubleshooting.
 
+## Scaling limits
+
+The NetBird audit endpoint returns the account's full audit history on every
+poll and exposes no server-side paging or cursor parameters, so AuditBridge
+compensates on the client side. A per-sink watermark persisted to
+`CURSOR_FILE` filters out already-delivered events, and events that share a
+timestamp with the watermark are tracked by ID so a later-arriving event with
+an equal timestamp is neither dropped nor duplicated. Without a persisted
+cursor, a restart replays the full history once, and a very large history is
+still fetched and filtered in full each poll: this service suits audit volumes
+that comfortably fit in memory. See [Configuration](docs/CONFIGURATION.md) for
+the cursor behavior and [Operations](docs/OPERATIONS.md) for the symptoms it
+produces.
+
 ## Verified
 
 The screenshots below are real output from a live run: real Loki, a real
