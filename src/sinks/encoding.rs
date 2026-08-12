@@ -176,7 +176,7 @@ fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
     }
 }
 
-fn timestamp_to_nanoseconds(timestamp: &str) -> String {
+pub(crate) fn timestamp_to_nanoseconds(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp)
         .or_else(|_| {
             let ts = timestamp.trim_end_matches('Z');

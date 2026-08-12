@@ -4,7 +4,7 @@ use crate::metrics::{router, Metrics};
 use crate::models::Event;
 use crate::netbird::NetbirdClient;
 use crate::retry::{with_retry, RetryConfig};
-use crate::sinks::encoding::Encoding;
+use crate::sinks::encoding::{timestamp_to_nanoseconds, Encoding};
 use crate::sinks::http::HttpSink;
 use crate::sinks::syslog::{SyslogProtocol, SyslogSink};
 use crate::sinks::Sink;
@@ -842,6 +842,13 @@ fn test_cursor_load_migrates_legacy_timestamp_only_format() {
     );
     assert!(loaded["loki"].delivered_ids.is_empty());
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn test_timestamp_to_nanoseconds_falls_back_to_epoch_zero() {
+    // Regression guard: an unparseable timestamp must resolve deterministically
+    // (epoch 0), not to the wall-clock "now" which would differ every poll.
+    assert_eq!(timestamp_to_nanoseconds("not-a-timestamp"), "0");
 }
 
 #[tokio::test]
