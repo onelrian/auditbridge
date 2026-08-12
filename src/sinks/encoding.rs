@@ -96,7 +96,7 @@ fn event_json(event: &Event) -> serde_json::Value {
 // syslog collectors expect for application-level logs.
 const SYSLOG_PRI: u32 = 134;
 
-fn format_rfc3164(event: &Event) -> String {
+pub(crate) fn format_rfc3164(event: &Event) -> String {
     // <PRI>TIMESTAMP HOSTNAME TAG: MSG. RFC 3164 timestamps are notionally
     // "Mmm dd hh:mm:ss" local time, but most collectors (including syslog-ng
     // and rsyslog defaults) accept ISO 8601 in the field without complaint,
@@ -109,7 +109,7 @@ fn format_rfc3164(event: &Event) -> String {
     )
 }
 
-fn format_rfc5424(event: &Event) -> String {
+pub(crate) fn format_rfc5424(event: &Event) -> String {
     // <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG
     format!(
         "<{}>1 {} auditbridge netbird-audit - AUDIT - {}\n",
@@ -120,17 +120,17 @@ fn format_rfc5424(event: &Event) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct LokiStream {
+pub(crate) struct LokiStream {
     stream: HashMap<String, String>,
     values: Vec<(String, String)>,
 }
 
 #[derive(Debug, Serialize)]
-struct LokiPushRequest {
+pub(crate) struct LokiPushRequest {
     streams: Vec<LokiStream>,
 }
 
-fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
+pub(crate) fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
     let mut streams: HashMap<String, LokiStream> = HashMap::new();
 
     for event in events {
@@ -176,7 +176,7 @@ fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
     }
 }
 
-fn timestamp_to_nanoseconds(timestamp: &str) -> String {
+pub(crate) fn timestamp_to_nanoseconds(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp)
         .or_else(|_| {
             let ts = timestamp.trim_end_matches('Z');

@@ -208,7 +208,7 @@ fn parse_sink_spec(name: &str) -> Result<SinkSpec> {
 }
 
 // "Key1:Value1,Key2:Value2" -> [(Key1, Value1), (Key2, Value2)]
-fn parse_headers(raw: &str) -> Result<Vec<(String, String)>> {
+pub(crate) fn parse_headers(raw: &str) -> Result<Vec<(String, String)>> {
     raw.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
