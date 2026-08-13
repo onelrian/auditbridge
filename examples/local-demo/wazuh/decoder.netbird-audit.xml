@@ -1,0 +1,16 @@
+<!--
+  NetBird Audit Event Decoder
+  Parses JSON audit events shipped by auditbridge (NetBird Management API
+  audit log) via syslog. The syslog predecoder extracts program_name
+  "netbird-audit"; the remaining message is a JSON object that the JSON
+  decoder flattens into fields (activity, activity_code, initiator_email,
+  initiator_name, target_id, meta.*, etc.).
+-->
+<decoder name="netbird-audit">
+  <program_name>netbird-audit</program_name>
+</decoder>
+
+<decoder name="netbird-audit-fields">
+  <parent>netbird-audit</parent>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

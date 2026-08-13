@@ -1,0 +1,215 @@
+<group name="netbird_audit,">
+
+  <!-- ================================================== -->
+  <!-- BASE CATCH-ALL                                      -->
+  <!-- ================================================== -->
+  <!--
+  Fires on every NetBird audit event decoded from the auditbridge syslog
+  stream. The JSON decoder flattens fields such as activity, activity_code,
+  initiator_email, initiator_name, target_id and meta.*.
+  -->
+  <rule id="108600" level="3">
+    <decoded_as>netbird-audit</decoded_as>
+    <description>NetBird audit: $(activity) by $(initiator_email)</description>
+    <group>netbird_audit,</group>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- CREDENTIALS / ACCESS TOKENS  (High)                -->
+  <!-- ================================================== -->
+  <rule id="108601" level="10">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)access token created</field>
+    <description>NetBird audit: personal access token created by $(initiator_email)</description>
+    <group>netbird_audit,credential_access,</group>
+    <mitre><id>T1078</id></mitre>
+  </rule>
+
+  <rule id="108602" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)access token deleted</field>
+    <description>NetBird audit: personal access token deleted by $(initiator_email)</description>
+    <group>netbird_audit,credential_access,</group>
+  </rule>
+
+  <rule id="108603" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)setup key created</field>
+    <description>NetBird audit: setup key created by $(initiator_email)</description>
+    <group>netbird_audit,credential_access,</group>
+    <mitre><id>T1078</id></mitre>
+  </rule>
+
+  <rule id="108604" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)setup key deleted</field>
+    <description>NetBird audit: setup key deleted by $(initiator_email)</description>
+    <group>netbird_audit,credential_access,</group>
+  </rule>
+
+  <rule id="108605" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)setup key updated</field>
+    <description>NetBird audit: setup key updated by $(initiator_email)</description>
+    <group>netbird_audit,credential_access,</group>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- USER MANAGEMENT  (High)                            -->
+  <!-- ================================================== -->
+  <rule id="108610" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)user created|user added</field>
+    <description>NetBird audit: user added by $(initiator_email)</description>
+    <group>netbird_audit,user_management,</group>
+    <mitre><id>T1136</id></mitre>
+  </rule>
+
+  <rule id="108611" level="10">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)user deleted|user removed</field>
+    <description>NetBird audit: user deleted by $(initiator_email)</description>
+    <group>netbird_audit,user_management,</group>
+  </rule>
+
+  <rule id="108612" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)user updated|user role</field>
+    <description>NetBird audit: user or role updated by $(initiator_email)</description>
+    <group>netbird_audit,user_management,privilege_escalation,</group>
+    <mitre><id>T1098</id></mitre>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- PEER MANAGEMENT  (Medium)                          -->
+  <!-- ================================================== -->
+  <rule id="108620" level="5">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)peer created|peer added</field>
+    <description>NetBird audit: peer added by $(initiator_email)</description>
+    <group>netbird_audit,peer_management,</group>
+  </rule>
+
+  <rule id="108621" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)peer deleted|peer removed</field>
+    <description>NetBird audit: peer deleted by $(initiator_email)</description>
+    <group>netbird_audit,peer_management,</group>
+  </rule>
+
+  <rule id="108622" level="6">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)peer updated</field>
+    <description>NetBird audit: peer updated by $(initiator_email)</description>
+    <group>netbird_audit,peer_management,</group>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- GROUP MANAGEMENT  (Medium)                         -->
+  <!-- ================================================== -->
+  <rule id="108630" level="5">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)group created|group added</field>
+    <description>NetBird audit: group added by $(initiator_email)</description>
+    <group>netbird_audit,group_management,</group>
+  </rule>
+
+  <rule id="108631" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)group deleted|group removed</field>
+    <description>NetBird audit: group deleted by $(initiator_email)</description>
+    <group>netbird_audit,group_management,</group>
+  </rule>
+
+  <rule id="108632" level="6">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)group updated</field>
+    <description>NetBird audit: group updated by $(initiator_email)</description>
+    <group>netbird_audit,group_management,</group>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- SECURITY POLICY / NETWORK CONFIG  (High)           -->
+  <!-- ================================================== -->
+  <rule id="108640" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)policy created|policy added</field>
+    <description>NetBird audit: access policy added by $(initiator_email)</description>
+    <group>netbird_audit,policy_change,</group>
+  </rule>
+
+  <rule id="108641" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)policy deleted|policy removed</field>
+    <description>NetBird audit: access policy deleted by $(initiator_email)</description>
+    <group>netbird_audit,policy_change,</group>
+  </rule>
+
+  <rule id="108642" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)policy updated</field>
+    <description>NetBird audit: access policy updated by $(initiator_email)</description>
+    <group>netbird_audit,policy_change,</group>
+  </rule>
+
+  <rule id="108643" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)route created|route added</field>
+    <description>NetBird audit: route added by $(initiator_email)</description>
+    <group>netbird_audit,network_change,</group>
+  </rule>
+
+  <rule id="108644" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)route deleted|route removed</field>
+    <description>NetBird audit: route deleted by $(initiator_email)</description>
+    <group>netbird_audit,network_change,</group>
+  </rule>
+
+  <rule id="108645" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)network created|network added</field>
+    <description>NetBird audit: network added by $(initiator_email)</description>
+    <group>netbird_audit,network_change,</group>
+  </rule>
+
+  <rule id="108646" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)network deleted|network removed</field>
+    <description>NetBird audit: network deleted by $(initiator_email)</description>
+    <group>netbird_audit,network_change,</group>
+  </rule>
+
+  <rule id="108647" level="7">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)dns (created|added|updated|deleted)</field>
+    <description>NetBird audit: DNS configuration changed by $(initiator_email)</description>
+    <group>netbird_audit,network_change,</group>
+  </rule>
+
+  <!-- ================================================== -->
+  <!-- AUTHENTICATION  (Medium)                           -->
+  <!-- ================================================== -->
+  <rule id="108650" level="3">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)logged in|login</field>
+    <description>NetBird audit: user login by $(initiator_email)</description>
+    <group>netbird_audit,authentication_success,</group>
+  </rule>
+
+  <rule id="108651" level="8">
+    <if_sid>108600</if_sid>
+    <field name="activity" type="pcre2">(?i)login failed|failed login|authentication failed</field>
+    <description>NetBird audit: failed login attempt for $(initiator_email)</description>
+    <group>netbird_audit,authentication_failed,</group>
+    <mitre><id>T1110</id></mitre>
+  </rule>
+
+  <rule id="108652" level="12" frequency="5" timeframe="300">
+    <if_matched_sid>108651</if_matched_sid>
+    <description>NetBird audit: repeated failed login attempts - possible brute force</description>
+    <group>netbird_audit,authentication_failed,brute_force,</group>
+    <mitre><id>T1110</id></mitre>
+  </rule>
+
+</group>

@@ -6,10 +6,27 @@ services:
     command: ["python3", "-u", "/mock_netbird.py"]
     networks: [demo]
 
+  # Generic HTTP webhook receiver (proves the HTTP sink delivers)
+  webhook-receiver:
+    image: python:3.12-slim
+    volumes:
+      - ./receivers/webhook_receiver.py:/webhook_receiver.py:ro
+    command: ["python3", "-u", "/webhook_receiver.py"]
+    networks: [demo]
+
+  # Generic syslog receiver, TCP (1514) and UDP (1515)
+  syslog-receiver:
+    image: python:3.12-slim
+    volumes:
+      - ./receivers/syslog_receiver.py:/syslog_receiver.py:ro
+    command: ["python3", "-u", "/syslog_receiver.py"]
+    networks: [demo]
+
+  # Wazuh-equivalent syslog receiver (RFC 3164, UDP, the common Wazuh case)
   wazuh-receiver:
     image: python:3.12-slim
     volumes:
-      - ./syslog_receiver.py:/syslog_receiver.py:ro
+      - ./receivers/syslog_receiver.py:/syslog_receiver.py:ro
     command: ["python3", "-u", "/syslog_receiver.py"]
     networks: [demo]
 
@@ -24,14 +41,28 @@ services:
     environment:
       NETBIRD_API_URL: "http://mock-netbird:8080"
       NETBIRD_API_TOKEN: "demo-token-not-real"
-      SINKS: "loki,wazuh"
+      # One sink per type: Loki, Wazuh (UDP syslog), generic HTTP webhook,
+      # and generic syslog (TCP + UDP).
+      SINKS: "loki,wazuh,webhook,syslogtcp,syslogudp"
       LOKI_URL: "http://loki:3100"
-      SINK_WAZUH_ADDR: "wazuh-receiver:1514"
+      SINK_WAZUH_ADDR: "wazuh-receiver:1515"
+      SINK_WAZUH_PROTOCOL: "udp"
+      SINK_WEBHOOK_TRANSPORT: "http"
+      SINK_WEBHOOK_URL: "http://webhook-receiver:8081/ingest"
+      SINK_WEBHOOK_ENCODING: "ndjson"
+      SINK_SYSLOGTCP_TRANSPORT: "syslog"
+      SINK_SYSLOGTCP_ADDR: "syslog-receiver:1514"
+      SINK_SYSLOGTCP_PROTOCOL: "tcp"
+      SINK_SYSLOGTCP_ENCODING: "syslog5424"
+      SINK_SYSLOGUDP_TRANSPORT: "syslog"
+      SINK_SYSLOGUDP_ADDR: "syslog-receiver:1515"
+      SINK_SYSLOGUDP_PROTOCOL: "udp"
+      SINK_SYSLOGUDP_ENCODING: "syslog3164"
       CHECK_INTERVAL: "5"
       RUST_LOG: "info"
     ports:
       - "19090:9090"
-    depends_on: [mock-netbird, loki, wazuh-receiver]
+    depends_on: [mock-netbird, loki, wazuh-receiver, webhook-receiver, syslog-receiver]
     networks: [demo]
 
 networks:
