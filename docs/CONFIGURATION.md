@@ -13,6 +13,7 @@ AuditBridge uses environment variables. A direct secret variable and its
 | `RETRY_MAX_ATTEMPTS` | `5` | Attempts per fetch or delivery cycle |
 | `RETRY_BASE_DELAY_MS` | `500` | Full-jitter retry backoff base in milliseconds |
 | `RETRY_MAX_DELAY_MS` | `30000` | Retry backoff maximum in milliseconds |
+| `BATCH_SIZE` | `500` | Maximum events per delivery request; `0` disables chunking |
 | `CURSOR_FILE` | unset | Persistent per-sink delivery watermark path |
 | `METRICS_PORT` | `9090` | Health and Prometheus HTTP server port |
 | `RUST_LOG` | `info` | Rust log filter |
@@ -23,5 +24,12 @@ AuditBridge uses environment variables. A direct secret variable and its
 > reprocesses the account's full audit history after every restart, since
 > NetBird's audit endpoint returns the full history and exposes no
 > server-side paging or cursor parameters.
+
+> [!NOTE]
+> A fresh install, a lost cursor, or a restored old cursor delivers the whole
+> audit history in one poll. `BATCH_SIZE` splits that replay into
+> `BATCH_SIZE`-event requests so payloads stay under intake limits (Loki's
+> push API and most HTTP/SIEM endpoints cap request size); the per-sink
+> watermark only advances when every chunk has been delivered.
 
 See [Sinks](SINKS.md) for sink-specific variables.

@@ -119,7 +119,15 @@ async fn run(
             return;
         }
 
-        process_cycle(nb_client, sinks, cursors, &config.retry, metrics).await;
+        process_cycle(
+            nb_client,
+            sinks,
+            cursors,
+            &config.retry,
+            config.batch_size,
+            metrics,
+        )
+        .await;
 
         if let Some(path) = &config.cursor_file {
             let to_save: HashMap<String, DateTime<Utc>> = cursors
@@ -187,6 +195,7 @@ async fn process_cycle(
     sinks: &[Box<dyn Sink>],
     cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
     retry_cfg: &RetryConfig,
+    batch_size: usize,
     metrics: &Metrics,
 ) {
     let mut events = match with_retry("netbird fetch", retry_cfg, || nb_client.fetch_events()).await
@@ -222,20 +231,44 @@ async fn process_cycle(
 
         let count = pending.len();
         let op_name = format!("sink '{}' send", sink.name());
-        match with_retry(&op_name, retry_cfg, || sink.send(&pending)).await {
-            Ok(_) => {
-                if let Some(last_event) = pending.last() {
-                    if let Ok(ts) = DateTime::parse_from_rfc3339(&last_event.timestamp) {
-                        *cursor = Some(ts.with_timezone(&Utc));
-                    }
+        // A full-history replay (fresh install, lost cursor) can produce a
+        // very large batch in one poll; most intake endpoints cap payload
+        // size, so split into chunks that each get the usual retry/backoff.
+        // 0 = no chunking. The watermark advances only when every chunk
+        // delivers, so a partial failure retries the whole set next cycle.
+        let chunk_size = if batch_size == 0 {
+            count.max(1)
+        } else {
+            batch_size
+        };
+
+        let mut all_delivered = true;
+        for chunk in pending.chunks(chunk_size) {
+            match with_retry(&op_name, retry_cfg, || sink.send(chunk)).await {
+                Ok(_) => {}
+                Err(e) => {
+                    all_delivered = false;
+                    metrics.record_sink_error(sink.name());
+                    error!(
+                        "Failed to send {} of {} events to {}: {}",
+                        chunk.len(),
+                        count,
+                        sink.name(),
+                        e
+                    );
+                    break;
                 }
-                metrics.record_sink_success(sink.name(), count);
-                info!("Delivered {} events to {}", count, sink.name());
             }
-            Err(e) => {
-                metrics.record_sink_error(sink.name());
-                error!("Failed to send {} events to {}: {}", count, sink.name(), e);
+        }
+
+        if all_delivered {
+            if let Some(last_event) = pending.last() {
+                if let Ok(ts) = DateTime::parse_from_rfc3339(&last_event.timestamp) {
+                    *cursor = Some(ts.with_timezone(&Utc));
+                }
             }
+            metrics.record_sink_success(sink.name(), count);
+            info!("Delivered {} events to {}", count, sink.name());
         }
     }
 }
