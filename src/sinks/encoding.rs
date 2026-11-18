@@ -3,6 +3,7 @@ use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
+use tracing::warn;
 
 /// How an event batch becomes bytes on the wire. Transports (http, syslog)
 /// are generic; encodings are what actually make a specific backend's wire
@@ -158,7 +159,7 @@ fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
         // initiator_email/name stay in the JSON body, not labels: they're
         // higher cardinality than the rest of the label set and would
         // fragment Loki streams per-user instead of per-activity.
-        let ts_ns = timestamp_to_nanoseconds(&event.timestamp);
+        let ts_ns = timestamp_to_nanoseconds(&event.id, &event.timestamp);
         let log_line = event_json(event).to_string();
 
         streams
@@ -176,12 +177,33 @@ fn build_loki_push_request(events: &[Event]) -> LokiPushRequest {
     }
 }
 
-fn timestamp_to_nanoseconds(timestamp: &str) -> String {
+/// Parses an event timestamp as RFC 3339, retrying once as UTC for values
+/// that omit the offset entirely. Shared with the delivery watermark in
+/// `main.rs`, so "what Loki sees" and "what the cursor compares" can never
+/// disagree about what a timestamp means.
+pub(crate) fn parse_event_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(timestamp)
         .or_else(|_| {
             let ts = timestamp.trim_end_matches('Z');
             DateTime::parse_from_rfc3339(&format!("{}+00:00", ts))
         })
-        .map(|dt| (dt.timestamp_nanos_opt().unwrap_or(0)).to_string())
-        .unwrap_or_else(|_| Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string())
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+// An unparseable timestamp becomes the Unix epoch, never `Utc::now()`: the
+// audit time must not silently rewrite itself to "right now" and differ on
+// every poll. Epoch keeps the event in a stable place in the stream so it is
+// still searchable, and the warning names the event so it can be fixed.
+fn timestamp_to_nanoseconds(event_id: &str, timestamp: &str) -> String {
+    match parse_event_timestamp(timestamp) {
+        Some(dt) => dt.timestamp_nanos_opt().unwrap_or(0).to_string(),
+        None => {
+            warn!(
+                "Event '{}' has an unparseable timestamp {:?}; encoding it at the Unix epoch",
+                event_id, timestamp
+            );
+            "0".to_string()
+        }
+    }
 }

@@ -10,16 +10,18 @@ mod sinks;
 mod tests;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use config::Config;
+use cursor::SinkCursor;
 use metrics::Metrics;
+use models::Event;
 use netbird::NetbirdClient;
 use retry::{with_retry, RetryConfig};
+use sinks::encoding::parse_event_timestamp;
 use sinks::Sink;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use tokio::time::sleep;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -109,7 +111,7 @@ async fn main() -> Result<()> {
 async fn run(
     nb_client: &NetbirdClient,
     sinks: &[Box<dyn Sink>],
-    cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    cursors: &mut HashMap<String, SinkCursor>,
     config: &Config,
     metrics: &Metrics,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -130,9 +132,10 @@ async fn run(
         .await;
 
         if let Some(path) = &config.cursor_file {
-            let to_save: HashMap<String, DateTime<Utc>> = cursors
+            let to_save: HashMap<String, SinkCursor> = cursors
                 .iter()
-                .filter_map(|(name, ts)| ts.map(|ts| (name.clone(), ts)))
+                .filter(|(_, cursor)| cursor.watermark.is_some())
+                .map(|(name, cursor)| (name.clone(), cursor.clone()))
                 .collect();
             if let Err(e) = cursor::save(path, &to_save) {
                 error!("Failed to persist cursor file: {}", e);
@@ -179,11 +182,15 @@ async fn shutdown_signal() {
 // account's full audit history into every sink again.
 fn build_initial_cursors(
     sinks: &[Box<dyn Sink>],
-    persisted: &HashMap<String, DateTime<Utc>>,
-) -> HashMap<String, Option<DateTime<Utc>>> {
+    persisted: &HashMap<String, SinkCursor>,
+) -> HashMap<String, SinkCursor> {
     sinks
         .iter()
-        .map(|s| (s.name().to_string(), persisted.get(s.name()).copied()))
+        .map(|s| {
+            let name = s.name().to_string();
+            let cursor = persisted.get(&name).cloned().unwrap_or_default();
+            (name, cursor)
+        })
         .collect()
 }
 
@@ -193,7 +200,7 @@ fn build_initial_cursors(
 async fn process_cycle(
     nb_client: &NetbirdClient,
     sinks: &[Box<dyn Sink>],
-    cursors: &mut HashMap<String, Option<DateTime<Utc>>>,
+    cursors: &mut HashMap<String, SinkCursor>,
     retry_cfg: &RetryConfig,
     batch_size: usize,
     metrics: &Metrics,
@@ -214,16 +221,9 @@ async fn process_cycle(
     events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
     for sink in sinks {
-        let cursor = cursors.entry(sink.name().to_string()).or_insert(None);
+        let cursor = cursors.entry(sink.name().to_string()).or_default().clone();
 
-        let mut pending = events.clone();
-        if let Some(last_ts) = *cursor {
-            pending.retain(|e| {
-                DateTime::parse_from_rfc3339(&e.timestamp)
-                    .map(|ts| ts.with_timezone(&Utc) > last_ts)
-                    .unwrap_or(false)
-            });
-        }
+        let pending = select_pending(&events, &cursor, sink.name());
 
         if pending.is_empty() {
             continue;
@@ -262,13 +262,66 @@ async fn process_cycle(
         }
 
         if all_delivered {
-            if let Some(last_event) = pending.last() {
-                if let Ok(ts) = DateTime::parse_from_rfc3339(&last_event.timestamp) {
-                    *cursor = Some(ts.with_timezone(&Utc));
-                }
-            }
+            let mut advanced = cursor;
+            advanced.record_delivered(&pending);
+            cursors.insert(sink.name().to_string(), advanced);
             metrics.record_sink_success(sink.name(), count);
             info!("Delivered {} events to {}", count, sink.name());
         }
     }
+}
+
+// Picks the events this sink has not been confirmed to have received yet.
+//
+// A strict `ts > watermark` filter loses events: when several events share
+// the newest timestamp, the watermark lands on that timestamp and any further
+// event with the same timestamp in a later poll is excluded forever. So an
+// event is also pending when it sits exactly at the watermark and its ID is
+// not one of the IDs already delivered there.
+//
+// Duplicates are collapsed by (timestamp, id), keeping the first occurrence:
+// at-least-once is a retry guarantee, not a licence to send the same event
+// twice inside a single request.
+fn select_pending(events: &[Event], cursor: &SinkCursor, sink_name: &str) -> Vec<Event> {
+    let mut pending: Vec<Event> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut warned_unparseable = false;
+
+    for event in events {
+        match parse_event_timestamp(&event.timestamp) {
+            Some(ts) => {
+                let is_new = match cursor.watermark {
+                    None => true,
+                    Some(watermark) => {
+                        ts > watermark
+                            || (ts == watermark && !cursor.boundary_ids.contains(&event.id))
+                    }
+                };
+
+                if is_new && seen.insert((event.timestamp.clone(), event.id.clone())) {
+                    pending.push(event.clone());
+                }
+            }
+            // An unparseable timestamp cannot be ordered, so it can never be
+            // recorded as delivered and is re-sent on every cycle while it
+            // stays in NetBird's history. That is the deliberate trade: the
+            // alternative is dropping it silently, which is the event loss
+            // this ticket is about. Kept loud so it can be fixed upstream.
+            None => {
+                if !warned_unparseable {
+                    warn!(
+                        "Event '{}' has an unparseable timestamp {:?}; delivering it without \
+                         advancing the watermark for sink '{}'",
+                        event.id, event.timestamp, sink_name
+                    );
+                    warned_unparseable = true;
+                }
+                if seen.insert((event.timestamp.clone(), event.id.clone())) {
+                    pending.push(event.clone());
+                }
+            }
+        }
+    }
+
+    pending
 }

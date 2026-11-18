@@ -32,4 +32,15 @@ AuditBridge uses environment variables. A direct secret variable and its
 > push API and most HTTP/SIEM endpoints cap request size); the per-sink
 > watermark only advances when every chunk has been delivered.
 
+> [!NOTE]
+> `CURSOR_FILE` is a JSON object keyed by sink name. Each entry holds the sink's
+> delivered watermark plus the IDs of the events already delivered at exactly
+> that timestamp, which is what keeps events sharing the newest timestamp from
+> being skipped. The stored ID set is bounded by the events sharing the newest
+> timestamp, not by history length. Cursor files written by a version that
+> stored only the timestamp still load; such an entry re-delivers the events at
+> its watermark once, which is harmless and intentional. Events whose timestamps
+> cannot be parsed are delivered with a warning and never advance a watermark,
+> so they are re-sent every poll.
+
 See [Sinks](SINKS.md) for sink-specific variables.
