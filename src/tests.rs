@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::cursor;
+use crate::cursor::{self, SinkCursor};
 use crate::metrics::{router, Metrics};
 use crate::models::Event;
 use crate::netbird::NetbirdClient;
@@ -182,7 +182,7 @@ async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
         vec![],
         Encoding::Json,
     ))];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -195,7 +195,7 @@ async fn test_process_cycle_does_not_advance_watermark_on_send_failure() {
     .await;
 
     assert_eq!(
-        cursors.get("flaky").copied().flatten(),
+        cursors.get("flaky").and_then(|c| c.watermark),
         None,
         "watermark must not advance when the sink write fails"
     );
@@ -226,7 +226,7 @@ async fn test_process_cycle_advances_watermark_on_send_success() {
         vec![],
         Encoding::Json,
     ))];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -239,7 +239,7 @@ async fn test_process_cycle_advances_watermark_on_send_success() {
     .await;
 
     assert!(
-        cursors.get("generic").copied().flatten().is_some(),
+        cursors.get("generic").and_then(|c| c.watermark).is_some(),
         "watermark must advance once delivery is confirmed"
     );
 }
@@ -285,7 +285,7 @@ async fn test_process_cycle_one_failing_sink_does_not_block_the_other() {
             Encoding::Json,
         )),
     ];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -297,8 +297,8 @@ async fn test_process_cycle_one_failing_sink_does_not_block_the_other() {
     )
     .await;
 
-    assert_eq!(cursors.get("down").copied().flatten(), None);
-    assert!(cursors.get("up").copied().flatten().is_some());
+    assert_eq!(cursors.get("down").and_then(|c| c.watermark), None);
+    assert!(cursors.get("up").and_then(|c| c.watermark).is_some());
 }
 
 #[test]
@@ -516,20 +516,57 @@ fn test_cursor_load_corrupt_file_returns_empty() {
 #[test]
 fn test_cursor_save_and_load_round_trip() {
     let path = temp_cursor_path("roundtrip");
+    let mut loki_ids = std::collections::BTreeSet::new();
+    loki_ids.insert("evt-boundary-1".to_string());
+    loki_ids.insert("evt-boundary-2".to_string());
+
     let mut cursors = HashMap::new();
     cursors.insert(
         "loki".to_string(),
-        "2023-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+        SinkCursor {
+            watermark: Some("2023-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()),
+            boundary_ids: loki_ids,
+        },
     );
     cursors.insert(
         "wazuh".to_string(),
-        "2023-06-15T12:30:00Z".parse::<DateTime<Utc>>().unwrap(),
+        SinkCursor {
+            watermark: Some("2023-06-15T12:30:00Z".parse::<DateTime<Utc>>().unwrap()),
+            boundary_ids: Default::default(),
+        },
     );
 
     cursor::save(&path, &cursors).expect("save should succeed");
     let loaded = cursor::load(&path);
 
-    assert_eq!(loaded, cursors);
+    assert_eq!(
+        loaded, cursors,
+        "watermarks and boundary IDs must survive a save/load round trip"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn test_cursor_load_legacy_timestamp_only_format() {
+    let path = temp_cursor_path("legacy");
+    // What the previous release wrote: a bare RFC 3339 timestamp per sink.
+    std::fs::write(&path, r#"{"loki":"2023-01-01T00:00:00Z"}"#).unwrap();
+
+    let loaded = cursor::load(&path);
+
+    let loki = loaded
+        .get("loki")
+        .expect("legacy entry must not be dropped");
+    assert_eq!(
+        loki.watermark,
+        Some("2023-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()),
+        "a legacy cursor file must keep its watermark, otherwise the upgrade \
+         replays the account's full history into every sink"
+    );
+    assert!(
+        loki.boundary_ids.is_empty(),
+        "legacy entries carry no boundary IDs"
+    );
     std::fs::remove_file(&path).ok();
 }
 
@@ -553,13 +590,19 @@ fn test_build_initial_cursors_resumes_from_persisted_state() {
 
     let mut persisted = HashMap::new();
     let loki_ts: DateTime<Utc> = "2023-01-01T00:00:00Z".parse().unwrap();
-    persisted.insert("loki".to_string(), loki_ts);
+    persisted.insert(
+        "loki".to_string(),
+        SinkCursor {
+            watermark: Some(loki_ts),
+            boundary_ids: Default::default(),
+        },
+    );
     // no entry for "wazuh": never persisted (e.g. first run for that sink)
 
     let cursors = build_initial_cursors(&sinks, &persisted);
 
-    assert_eq!(cursors.get("loki").copied().flatten(), Some(loki_ts));
-    assert_eq!(cursors.get("wazuh").copied().flatten(), None);
+    assert_eq!(cursors.get("loki").and_then(|c| c.watermark), Some(loki_ts));
+    assert_eq!(cursors.get("wazuh").and_then(|c| c.watermark), None);
 }
 
 fn fast_retry(max_attempts: u32) -> RetryConfig {
@@ -812,7 +855,7 @@ async fn test_run_lets_in_flight_cycle_finish_before_exiting() {
         .expect("run() task panicked");
 
     assert!(
-        result.get("test").copied().flatten().is_some(),
+        result.get("test").and_then(|c| c.watermark).is_some(),
         "the in-flight cycle must finish and its result apply even though shutdown fired mid-fetch"
     );
 }
@@ -835,15 +878,55 @@ async fn mount_events(mock: &MockServer, events: Vec<Event>) {
         .await;
 }
 
-async fn received_batch_sizes(mock: &MockServer) -> Vec<usize> {
+/// Every event body the sink received, one `Vec<Event>` per request. Boundary
+/// and dedupe assertions need the event *identities*, not just batch sizes.
+async fn received_events(mock: &MockServer) -> Vec<Vec<Event>> {
     mock.received_requests()
         .await
         .expect("no requests received")
         .iter()
-        .map(|req| {
-            serde_json::from_slice::<Vec<Event>>(&req.body)
-                .unwrap()
-                .len()
+        .map(|req| serde_json::from_slice::<Vec<Event>>(&req.body).unwrap())
+        .collect()
+}
+
+async fn received_batch_sizes(mock: &MockServer) -> Vec<usize> {
+    received_events(mock)
+        .await
+        .iter()
+        .map(|events| events.len())
+        .collect()
+}
+
+fn event_at(id: &str, timestamp: &str) -> Event {
+    let mut event = sample_event(id);
+    event.timestamp = timestamp.to_string();
+    event
+}
+
+fn ids(events: &[Event]) -> Vec<String> {
+    events.iter().map(|e| e.id.clone()).collect()
+}
+
+fn ids_and_timestamps(batches: &[Vec<Event>]) -> Vec<Vec<(String, String)>> {
+    batches
+        .iter()
+        .map(|events| {
+            events
+                .iter()
+                .map(|e| (e.id.clone(), e.timestamp.clone()))
+                .collect()
+        })
+        .collect()
+}
+
+fn expected_batches(batches: &[&[(&str, &str)]]) -> Vec<Vec<(String, String)>> {
+    batches
+        .iter()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(id, ts)| (id.to_string(), ts.to_string()))
+                .collect()
         })
         .collect()
 }
@@ -865,7 +948,7 @@ async fn test_process_cycle_splits_large_batches_into_chunks() {
 
     let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
     let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -883,7 +966,7 @@ async fn test_process_cycle_splits_large_batches_into_chunks() {
         "3 events with batch_size 2 must produce two requests of 2 and 1"
     );
     assert!(
-        cursors.get("sink").copied().flatten().is_some(),
+        cursors.get("sink").and_then(|c| c.watermark).is_some(),
         "watermark must advance once every chunk delivered"
     );
 }
@@ -905,7 +988,7 @@ async fn test_process_cycle_batch_size_zero_disables_chunking() {
 
     let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
     let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -942,7 +1025,7 @@ async fn test_process_cycle_does_not_advance_watermark_when_a_chunk_fails() {
 
     let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
     let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
-    let mut cursors: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
 
     process_cycle(
         &nb_client,
@@ -955,7 +1038,7 @@ async fn test_process_cycle_does_not_advance_watermark_when_a_chunk_fails() {
     .await;
 
     assert_eq!(
-        cursors.get("sink").copied().flatten(),
+        cursors.get("sink").and_then(|c| c.watermark),
         None,
         "watermark must not advance when any chunk fails, so nothing is skipped"
     );
@@ -977,5 +1060,319 @@ fn test_config_batch_size_defaults_to_500_and_parses_env() {
             ("BATCH_SIZE", Some("7")),
         ],
         || assert_eq!(Config::from_env().unwrap().batch_size, 7),
+    );
+}
+
+const T0: &str = "2023-01-01T00:00:00Z";
+const T5: &str = "2023-01-01T00:00:05Z";
+
+// Loki needs nanosecond timestamps. A valid RFC 3339 value must encode to its
+// own instant, and the `Z`-less form must still parse as UTC.
+#[test]
+fn test_loki_timestamp_encodes_parsed_instant() {
+    let body = serde_json::to_string(
+        &serde_json::from_slice::<serde_json::Value>(
+            &crate::sinks::encoding::encode_http_body(
+                Encoding::Loki,
+                &[event_at("A", T0), event_at("B", "2023-01-01T00:00:00")],
+            )
+            .unwrap()
+            .0,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // 2023-01-01T00:00:00Z in nanoseconds, however the offset was written.
+    let expected = "1672531200000000000";
+    let occurrences = body.matches(expected).count();
+    assert_eq!(
+        occurrences, 2,
+        "both the RFC 3339 and the offset-less form must encode the same instant, got: {}",
+        body
+    );
+}
+
+// An unparseable timestamp must NOT be rewritten to "now": that made the
+// audit time differ on every poll. It is deterministic (the epoch) instead.
+#[test]
+fn test_loki_unparseable_timestamp_falls_back_to_epoch_deterministically() {
+    let encode = || {
+        let (body, _) = crate::sinks::encoding::encode_http_body(
+            Encoding::Loki,
+            &[event_at("X", "not-a-timestamp")],
+        )
+        .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+    };
+
+    let first = encode();
+    std::thread::sleep(Duration::from_millis(20));
+    let second = encode();
+
+    // Compare the payload rather than the raw bytes: the stream label map is a
+    // HashMap, so its key order is not stable between encodings (nor between
+    // processes) and says nothing about the timestamp.
+    assert_eq!(
+        first, second,
+        "encoding an unparseable timestamp twice must produce identical output"
+    );
+    assert_eq!(
+        first["streams"][0]["values"][0][0],
+        serde_json::json!("0"),
+        "an unparseable timestamp must encode at the Unix epoch, got: {}",
+        first
+    );
+}
+
+// The ticket's scenario: two events share a timestamp and are delivered; a
+// third event with the *same* timestamp then shows up in a later poll. A
+// strict `ts > watermark` filter drops it forever. Boundary IDs must let it
+// through while still suppressing the two already delivered at that time.
+//
+// The second request is the discriminating assertion: a plain `ts >= watermark`
+// filter would resend A and B too, so asserting exactly [C] pins the boundary
+// set rather than merely the watermark.
+#[tokio::test]
+async fn test_same_timestamp_event_arriving_later_is_not_dropped() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
+
+    // Poll 1: A and B, both at T0.
+    mount_events(&nb_mock, vec![event_at("A", T0), event_at("B", T0)]).await;
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+
+    let after_first = cursors.get("sink").cloned().expect("cursor must exist");
+    assert_eq!(after_first.watermark, Some(T0.parse().unwrap()));
+    assert_eq!(
+        after_first.boundary_ids,
+        ["A".to_string(), "B".to_string()].into_iter().collect(),
+        "both events at the watermark must be recorded as delivered"
+    );
+
+    // Poll 2: A, B and a new C, all at T0.
+    nb_mock.reset().await;
+    mount_events(
+        &nb_mock,
+        vec![event_at("A", T0), event_at("B", T0), event_at("C", T0)],
+    )
+    .await;
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+
+    let batches = received_events(&sink_mock).await;
+    assert_eq!(batches.len(), 2, "one request per poll that had work to do");
+    assert_eq!(ids(&batches[0]), vec!["A", "B"]);
+    assert_eq!(
+        ids(&batches[1]),
+        vec!["C"],
+        "only the never-delivered event at the watermark may be resent"
+    );
+
+    let after_second = cursors.get("sink").cloned().unwrap();
+    assert_eq!(after_second.watermark, Some(T0.parse().unwrap()));
+    assert_eq!(
+        after_second.boundary_ids,
+        ["A".to_string(), "B".to_string(), "C".to_string()]
+            .into_iter()
+            .collect(),
+        "the boundary set must grow with the newly delivered event"
+    );
+
+    // Poll 3: nothing new.
+    sink_mock.reset().await;
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+    assert!(
+        sink_mock.received_requests().await.unwrap().is_empty(),
+        "a poll with nothing new must not reach the sink"
+    );
+}
+
+// At-least-once is a retry guarantee, not permission to send the same event
+// twice in one request: a duplicate in a single fetch is collapsed.
+#[tokio::test]
+async fn test_duplicate_event_in_one_poll_is_delivered_once() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(
+        &nb_mock,
+        vec![event_at("A", T0), event_at("A", T0), event_at("B", T5)],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+
+    assert_eq!(
+        ids_and_timestamps(&received_events(&sink_mock).await),
+        expected_batches(&[&[("A", T0), ("B", T5)]]),
+        "a repeated (timestamp, id) must be sent once, in timestamp order"
+    );
+}
+
+// An event whose timestamp cannot be parsed cannot be ordered, so it is
+// delivered (never silently dropped) and never recorded in the cursor. It is
+// therefore re-sent on every cycle while it stays in NetBird's history.
+#[tokio::test]
+async fn test_unparseable_timestamp_is_delivered_but_never_advances_watermark() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(
+        &nb_mock,
+        vec![event_at("A", T0), event_at("X", "not-a-timestamp")],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
+    cursors.insert(
+        "sink".to_string(),
+        SinkCursor {
+            watermark: Some(T0.parse().unwrap()),
+            boundary_ids: ["A".to_string()].into_iter().collect(),
+        },
+    );
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+
+    assert_eq!(
+        ids_and_timestamps(&received_events(&sink_mock).await),
+        expected_batches(&[&[("X", "not-a-timestamp")]]),
+        "the unparseable event is delivered; the already-delivered boundary event is not"
+    );
+
+    let cursor = cursors.get("sink").cloned().unwrap();
+    assert_eq!(cursor.watermark, Some(T0.parse().unwrap()));
+    assert_eq!(
+        cursor.boundary_ids,
+        ["A".to_string()].into_iter().collect(),
+        "an unparseable timestamp must not be recorded as a delivered boundary event"
+    );
+
+    // Second cycle: the unparseable event is still unattributable, so it is
+    // re-sent rather than silently lost.
+    sink_mock.reset().await;
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+    assert_eq!(
+        ids_and_timestamps(&received_events(&sink_mock).await),
+        expected_batches(&[&[("X", "not-a-timestamp")]]),
+        "an unorderable event is retried every cycle instead of being lost"
+    );
+}
+
+// A batch older than the current position must not move the watermark
+// backwards, which would re-deliver everything between it and the watermark.
+#[tokio::test]
+async fn test_watermark_never_decreases() {
+    let nb_mock = MockServer::start().await;
+    let sink_mock = MockServer::start().await;
+    mount_events(&nb_mock, vec![event_at("old", T0)]).await;
+    Mock::given(method("POST"))
+        .and(path("/ingest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink_mock)
+        .await;
+
+    let nb_client = NetbirdClient::new(nb_mock.uri(), "token".to_string());
+    let sinks: Vec<Box<dyn Sink>> = vec![sink_for(&sink_mock)];
+    let mut cursors: HashMap<String, SinkCursor> = HashMap::new();
+    cursors.insert(
+        "sink".to_string(),
+        SinkCursor {
+            watermark: Some(T5.parse().unwrap()),
+            boundary_ids: ["new".to_string()].into_iter().collect(),
+        },
+    );
+
+    process_cycle(
+        &nb_client,
+        &sinks,
+        &mut cursors,
+        &no_retry(),
+        500,
+        &Metrics::default(),
+    )
+    .await;
+
+    let cursor = cursors.get("sink").cloned().unwrap();
+    assert_eq!(
+        cursor.watermark,
+        Some(T5.parse().unwrap()),
+        "the watermark must never move backwards"
+    );
+    assert_eq!(
+        cursor.boundary_ids,
+        ["new".to_string()].into_iter().collect()
     );
 }

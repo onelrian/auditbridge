@@ -30,8 +30,9 @@ impl NetbirdClient {
 
     // /api/events/audit has no pagination or since/cursor params (confirmed
     // against docs.netbird.io/api/resources/events), so every poll fetches
-    // this account's full audit history. See the README's "Scaling Limits"
-    // section for why CURSOR_FILE only partly mitigates this.
+    // this account's full audit history. The README's "Scaling Limits" section
+    // explains what that costs and why CURSOR_FILE cannot fix it: the cursor
+    // filters client-side, so it does not shrink what NetBird sends.
     pub async fn fetch_events(&self) -> Result<Vec<Event>> {
         let url = format!("{}/api/events/audit", self.base_url);
 

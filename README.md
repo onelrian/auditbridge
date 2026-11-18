@@ -55,6 +55,19 @@ AuditBridge serves `/healthz`, `/readyz`, and `/metrics` on `METRICS_PORT`
 at least one configured sink. See [Operations](docs/OPERATIONS.md) for metric
 names and troubleshooting.
 
+## Scaling Limits
+
+NetBird's audit endpoint (`/api/events/audit`) has no pagination or
+`since`/cursor parameters: every poll returns the account's entire audit
+history in one response, and there is no server-side way to ask for only the
+events after a given point.
+
+`CURSOR_FILE` filters that history client-side, so only events past each sink's
+last confirmed watermark are delivered. It does not reduce what NetBird sends
+over the wire on each poll, so fetch payload size and latency grow with account
+history regardless of `CURSOR_FILE`. There is no tuning knob for this in
+AuditBridge; the limit is in the NetBird API.
+
 ## Verified
 
 Every sink type is verified end to end in [examples/local-demo](examples/local-demo/README.md):
